@@ -17,6 +17,8 @@ jobs:
   bootstrap:
     name: Global setup
     runs-on: ubuntu-latest
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
     container:
       image: sle118/squeezelite-esp32-idfv435
     outputs:
@@ -99,6 +101,8 @@ jobs:
           components/wifi-manager/webapp/*.cmake 
   build:
     runs-on: ubuntu-latest
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
     container:
       image: sle118/squeezelite-esp32-idfv435
     needs: [bootstrap]
@@ -136,6 +140,8 @@ jobs:
         name: prebuilt_objects
     - name: Build the firmware
       if: ${{ needs.bootstrap.outputs.mock == 0 }} 
+      env:
+        SPOTIFY_SECRET: -DCLIENT_ID="${{ secrets.SPOTIFY_CLIENT_ID }}" -DCLIENT_SECRET="${{ secrets.SPOTIFY_CLIENT_SECRET }}"
       run: |
         . ${IDF_PYTHON_ENV_PATH}/bin/activate
         echo "Copying target sdkconfig"
@@ -171,7 +177,7 @@ jobs:
             zip build/${artifact_file_name} partitions*.csv components/ build/*.bin build/bootloader/bootloader.bin build/partition_table/partition-table.bin build/flash_project_args build/size_*.txt
         fi
     - name: Upload Build Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: ${{ needs.bootstrap.outputs.mock == 0 }}
       with:
         name: ${{ env.artifact_prefix }}

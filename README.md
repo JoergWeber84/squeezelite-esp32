@@ -148,14 +148,29 @@ VCC - 3.3V
 GND - GND  
 FLT - GND  
 DMP - GND  
-SCL - GND  
+SCK - GND  
 BCK - (BCK - see below)  
 DIN - (DO - see below)  
-LCK - (WS - see below)
+LCK - (WS - see below)  
 FMT - GND  
-XMT - 3.3V 
+XMT - 3.3V  
 
 Use the `squeezelite-esp32-I2S-4MFlash-sdkconfig.defaults` configuration file.
+
+### ESP32 LyraT Mini v1.2
+
+This board is one of the [audio developpement board](https://docs.espressif.com/projects/esp-adf/en/latest/design-guide/dev-boards/get-started-esp32-lyrat-mini.html) designed by espressif for their ESP-ADF (Espressif Audio Development Framework). It uses ESP32-WROVER-E as it core and ES8311 as DAC. 
+A jack connector can be used or an HP output.
+It also contains 2 LEDS (one green, one blue) and 8 Buttons. Those buttons are not supported for now.
+An ADC is also present on the board, but not used in squeezelite use case.
+
+As for now, audio playback and LEDs are working.
+
+Use the `squeezelite-esp32-I2S-4MFlash-sdkconfig.defaults` configuration file.
+
+- i2c_config: `scl=25,sda=18,speed=400000,port=1`
+- dac_config: `model=es8311,bck=5,ws=25,do=26,sda=18,scl=23,i2c=24`
+- set_GPIO: `22=green,27=red,19=jack` 
 
 ### SqueezeAmpToo !
 
@@ -184,11 +199,11 @@ Default and only "host" is 1 as others are used already by flash and spiram. The
 ### DAC/I2S
 The NVS parameter "dac_config" set the gpio used for i2s communication with your DAC. You can define the defaults at compile time but nvs parameter takes precedence except for named configurations
 ```
-bck=<gpio>,ws=<gpio>,do=<gpio>[,mck=0|1|2][,mute=<gpio>[:0|1][,model=TAS57xx|TAS5713|AC101|WM8978|ES8388|I2S][,sda=<gpio>,scl=<gpio>[,i2c=<addr>]]
+bck=<gpio>,ws=<gpio>,do=<gpio>[,mck=0|1|2][,mute=<gpio>[:0|1][,model=TAS57xx|TAS5713|AC101|WM8978|ES8388|ES8311|I2S][,sda=<gpio>,scl=<gpio>[,i2c=<addr>]]
 ```
 if "model" is not set or is not recognized, then default "I2S" is used. The option "mck" is used for some codecs that require a master clock (although they should not). By default GPIO0 is used as MCLK and only recent builds (post mid-2023) can use 1 or 2. Also be aware that this cannot coexit with RMII Ethernet (see ethernet section below). I2C parameters are optional and only needed if your DAC requires an I2C control (See 'dac_controlset' below). Note that "i2c" parameters are decimal, hex notation is not allowed.
 
-So far, TAS57xx, TAS5713, AC101, WM8978 and ES8388 are recognized models where the proper init sequence/volume/power controls are sent. For other codecs that might require an I2C commands, please use the parameter "dac_controlset" that allows definition of simple commands to be sent over i2c for init, power, speaker and headset on and off using a JSON syntax:
+So far, TAS57xx, TAS5713, AC101, WM8978, ES8388 and ES8311 are recognized models where the proper init sequence/volume/power controls are sent. For other codecs that might require an I2C commands, please use the parameter "dac_controlset" that allows definition of simple commands to be sent over i2c for init, power, speaker and headset on and off using a JSON syntax:
 ```json
 { <command>: [ <item1>, <item2>, ... <item3> ],
   <command>: [ <item1>, <item2>, ... <item3> ],
@@ -238,13 +253,14 @@ Ground -------------------------- coax signal ground
 ### Display
 The NVS parameter "display_config" sets the parameters for an optional display. It can be I2C (see [here](#i2c) for shared bus) or SPI (see [here](#spi) for shared bus) Syntax is
 ```
-I2C,width=<pixels>,height=<pixels>[address=<i2c_address>][,reset=<gpio>][,HFlip][,VFlip][driver=SSD1306|SSD1326[:1|4]|SSD1327|SH1106]
-SPI,width=<pixels>,height=<pixels>,cs=<gpio>[,back=<gpio>][,reset=<gpio>][,speed=<speed>][,HFlip][,VFlip][driver=SSD1306|SSD1322|SSD1326[:1|4]|SSD1327|SH1106|SSD1675|ST7735|ST7789[:x=<offset>][:y=<offset>]|ILI9341[:16|18][,rotate]]
+I2C,width=<pixels>,height=<pixels>[address=<i2c_address>][,reset=<gpio>][,HFlip][,VFlip][,invert][driver=SSD1306|SSD1326[:1|4]|SSD1327|SH1106]
+SPI,width=<pixels>,height=<pixels>,cs=<gpio>[,back=<gpio>][,reset=<gpio>][,speed=<speed>][,HFlip][,VFlip][,invert][driver=SSD1306|SSD1322|SSD1326[:1|4]|SSD1327|SH1106|SSD1675|ST7735|ST7789[:x=<offset>][:y=<offset>]|ILI9341[:16|18][,rotate]]
 ```
 - back: a LED backlight used by some older devices (ST7735). It is PWM controlled for brightness
 - reset: some display have a reset pin that is should normally be pulled up if unused. Most displays require reset and will not initialize well otherwise.
 - VFlip and HFlip are optional can be used to change display orientation
 - rotate: for non-square *drivers*, move to portrait mode. Note that *width* and *height* must be inverted then
+- invert: invert each pixel colorspace
 - Default speed is 8000000 (8MHz) but SPI can work up to 26MHz or even 40MHz
 - SH1106 is 128x64 monochrome I2C/SPI [here](https://www.waveshare.com/wiki/1.3inch_OLED_HAT)
 - SSD1306 is 128x32 monochrome I2C/SPI [here](https://www.buydisplay.com/i2c-blue-0-91-inch-oled-display-module-128x32-arduino-raspberry-pi)
@@ -477,10 +493,11 @@ The benefit of the "raw" mode is that you can build a player which is as close a
 There is no good or bad option, it's your choice. Use the NVS parameter "lms_ctrls_raw" to change that option
 	
 **Note that gpio 36 and 39 are input only and cannot use interrupt. When using them for a button, a 100ms polling is started which is expensive. Long press is also likely to not work very well**
+
+**Note:** Touch buttons that can be found on some board like the LyraT V4.3 are not supported currently.
+
 ### Ethernet 
 Wired ethernet is supported by esp32 with various options but squeezeESP32 is only supporting a Microchip LAN8720 with a RMII interface like [this](https://www.aliexpress.com/item/32858432526.html) or SPI-ethernet bridges like Davicom DM9051 [that](https://www.amazon.com/dp/B08JLFWX9Z) or W5500 like [this](https://www.aliexpress.com/item/32312441357.html).
-
-**Note:** Touch buttons that can be find on some board like the LyraT V4.3 are not supported currently.
 
 #### RMII (LAN8720)	
 - RMII PHY wiring is fixed and can not be changed
@@ -642,9 +659,9 @@ docker run -it -v `pwd`:/workspace/squeezelite-esp32 sle118/squeezelite-esp32-id
 The above command will mount this repo into the docker container and start a bash terminal. From there, simply run idf.py build to build, etc. Note that at the time of writing these lines, flashing is not possible for docker running under windows https://github.com/docker/for-win/issues/1018.
 
 ### Manual Install of ESP-IDF
-You can install IDF manually on Linux or Windows (using the Subsystem for Linux) following the instructions at: https://www.instructables.com/id/ESP32-Development-on-Windows-Subsystem-for-Linux/ or see here https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/windows-setup.html for a direct install. You also need a few extra Python libraries for cspot by adding `[sudo] pip3 install protobuf grpcio-tools`
+First you need git and python (e.g 3.10.x), install these and let it add to system path.
 
-**Use the esp-idf 4.3.5 https://github.com/espressif/esp-idf/tree/release/v4.3.5 ** or the 4.4.5 (and above version) if you want to build for esp32-s3. You should clone recursively the whole branch (at the version you need) and run the installer (`install.bat [esp32[,esp32s3]]` from there. Some Windows version (at least) have now a SSL certificate issue. You can workaround this by editing idf-tools.py and adding the following under ìmport ssl`
+**Use the esp-idf 4.3.5 https://github.com/espressif/esp-idf/tree/release/v4.3.5 ** or the 4.4.5 (and above version) if you want to build for esp32-s3. You should clone recursively the whole branch (at the version you need) `git clone -b v4.3.5 https://github.com/espressif/esp-idf --recursive`and run the installer (`install.bat [esp32[,esp32s3]]` from there. Some Windows version (at least) have now a SSL certificate issue. You can workaround this by editing idf-tools.py and adding the following under ìmport ssl`
 ```
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context

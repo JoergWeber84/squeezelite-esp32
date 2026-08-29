@@ -70,7 +70,7 @@ static char * get_dac_config_string(){
 	return config_alloc_get_str("dac_config", CONFIG_DAC_CONFIG, "model=i2s,bck=" STR(CONFIG_I2S_BCK_IO)
 											",ws=" STR(CONFIG_I2S_WS_IO) ",do=" STR(CONFIG_I2S_DO_IO)
 											",sda=" STR(CONFIG_I2C_SDA) ",scl=" STR(CONFIG_I2C_SCL)
-											",mute=" STR(CONFIG_MUTE_GPIO));
+											",mute=" STR(CONFIG_MUTE_GPIO) ",mck=" STR(CONFIG_I2S_MCK_IO));
 }
 
 /****************************************************************************************
