@@ -14,6 +14,7 @@
 #include "tools.h"
 #include "messaging.h"
 #include "audio_controls.h"
+#include "buttons.h"
 #include "mqtt_svc.h"
 #include "rfid.h"
 
@@ -80,6 +81,24 @@ void app_svc_start(void) {
 	mqtt_svc_init();
 }
 
+static int touch_report(int argc, char **argv) {
+	button_touch_report();
+	return 0;
+}
+
+static void register_touch(void) {
+	const esp_console_cmd_t cmd = {
+		.command = "touch",
+		.help = "Show what the capacitive touch pads read, to help set a threshold",
+		.hint = NULL,
+		.func = &touch_report,
+	};
+#if CONFIG_WITH_CONFIG_UI
+	cmd_to_json(&cmd);
+#endif
+	ESP_ERROR_CHECK(esp_console_cmd_register(&cmd));
+}
+
 void register_optional_cmd(void) {
     #if CONFIG_WITH_CONFIG_UI	
     register_rotary_config();
@@ -87,6 +106,7 @@ void register_optional_cmd(void) {
     register_audio_config();
 	register_ledvu_config();
 	register_nvs();
+	register_touch();
 }    
 
 extern int squeezelite_main(int argc, char **argv);

@@ -68,7 +68,7 @@ touched below its threshold. Which channel sits on which GPIO is fixed by the si
 */
 #define TOUCH_POLL			50
 #define TOUCH_FILTER		10
-#define TOUCH_THRESHOLD_PCT	70
+#define TOUCH_THRESHOLD_PCT	90
 
 static const int touch_gpio[TOUCH_PAD_MAX] = { 4, 0, 2, 15, 13, 12, 14, 27, 33, 32 };
 static TimerHandle_t touch_timer;
@@ -431,7 +431,7 @@ void button_create_touch(void *client, int gpio, int threshold, int debounce, bu
 		uint16_t idle = 0;
 		touch_pad_read_filtered(channel, &idle);
 		threshold = (idle * TOUCH_THRESHOLD_PCT) / 100;
-		ESP_LOGI(TAG, "touch pad GPIO %u idles at %u, threshold set to %d", gpio, idle, threshold);
+		ESP_LOGI(TAG, "touch pad GPIO %u idles at %u, threshold set to %d - use the 'touch' command to check it against a real finger", gpio, idle, threshold);
 	}
 
 	if ((button = button_register(client, gpio, BUTTON_LOW, debounce, handler, long_press, shifter_gpio)) == NULL) return;
@@ -451,6 +451,35 @@ void button_create_touch(void *client, int gpio, int threshold, int debounce, bu
 	ESP_LOGE(TAG, "capacitive touch buttons are only supported on the esp32");
 #endif
 }	
+
+/****************************************************************************************
+ * Report what the touch pads read, for setting a threshold by hand
+ */
+void button_touch_report(void) {
+#if CONFIG_IDF_TARGET_ESP32
+	bool any = false;
+
+	for (int i = 0; i < n_buttons; i++) {
+		uint16_t value = 0;
+
+		if (!buttons[i].touch) continue;
+		any = true;
+
+		if (touch_pad_read_filtered(buttons[i].touch_channel, &value) != ESP_OK) {
+			ESP_LOGW(TAG, "touch pad GPIO %u cannot be read", buttons[i].gpio);
+			continue;
+		}
+
+		ESP_LOGI(TAG, "touch pad GPIO %u reads %u, threshold %d -> %s", buttons[i].gpio,
+				 value, buttons[i].touch_threshold,
+				 value < buttons[i].touch_threshold ? "touched" : "idle");
+	}
+
+	if (!any) ESP_LOGI(TAG, "no touch pads configured");
+#else
+	ESP_LOGI(TAG, "capacitive touch is only supported on the esp32");
+#endif
+}
 
 /****************************************************************************************
  * Get stored id

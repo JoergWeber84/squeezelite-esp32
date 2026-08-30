@@ -490,6 +490,8 @@ The benefit of the "raw" mode is that you can build a player which is as close a
 
 **Be aware that when using non "raw" mode, the CLI (Command Line Interface) of LMS is used and *must* be available without password**
 
+It must also be on the port the player expects. Squeezelite only learns the CLI port from the UDP discovery response, so a player that was given its server with `-s <address>` - which is what you need when the server sits in another subnet and broadcasts do not reach it - keeps using the default 9090 whatever LMS is configured for. If something else on that machine holds 9090, every button silently does nothing: the player connects, sends its command and no one is listening. Check it with `version ?` on port 9090, an LMS answers with its version.
+
 There is no good or bad option, it's your choice. Use the NVS parameter "lms_ctrls_raw" to change that option
 	
 **Note that gpio 36 and 39 are input only and cannot use interrupt. When using them for a button, a 100ms polling is started which is expensive. Long press is also likely to not work very well**
@@ -503,7 +505,17 @@ The esp32 can sense a finger on a bare pad or a piece of copper tape connected t
  {"gpio":27, "touch":true, "normal":{"pressed":"ACTRLS_VOLDOWN"}}]
 ```
 
-The pads are read through the chip's own filter and polled every 50ms. At boot, the idle value of each pad is measured and the trigger point is set to 70% of it, so **do not touch the pads while the player is starting**. If that auto-calibration does not suit your hardware (large pads, thick overlay, long wires), set the raw trigger value yourself with `"threshold": <value>`; a touched pad reads *below* that value. Run the firmware with debug logs on the `buttons` tag to see the values your pads actually produce.
+The pads are read through the chip's own filter and polled every 50ms. At boot the idle value of each pad is measured and the trigger point is set to 90% of it, so **do not touch the pads while the player is starting**.
+
+That auto-calibrated value is a starting point, not a measurement. How far a finger moves the reading depends on the size of the pad, on what covers it and on the length of the wire: pads of a few square centimetres under a thin case move it by 10 to 20 percent, and a small pad can manage less. Use the `touch` console command to see what yours actually do:
+
+```
+> touch
+touch pad GPIO 12 reads 662, threshold 596 -> idle
+touch pad GPIO 12 reads 601, threshold 596 -> touched
+```
+
+Read each pad idle and again with a finger on it, then put the middle of the two into `"threshold": <value>` for that button. A touched pad reads *below* the threshold. Setting a threshold explicitly also skips the calibration at boot, so a pad that happens to be covered while the player starts no longer ends up with a useless trigger point.
 
 Note that touch pins are shared with other functions: GPIO 12/13/14/15 are the JTAG pins, GPIO 0 is the boot strapping pin and several of them are also used by SD-card or SPI wiring on ready-made boards, so pick pads that your board leaves free.
 

@@ -33,8 +33,19 @@ touch-capable (0, 2, 4, 12, 13, 14, 15, 27, 32 or 33) and touching it always cou
 "pressed", whatever type the other buttons use. Set threshold to 0 to derive it from the
 idle value measured at creation, which assumes nobody touches the pad while booting.
 Touch pads are polled every 50ms, debounce only sets the long-press timer base.
+
+That derived threshold is a starting point, not a measurement: how far a finger moves
+the reading depends on the size of the pad and on what covers it. Use button_touch_report
+to see the real numbers and pass a threshold of your own when they do not fit.
 */
 void button_create_touch(void *client, int gpio, int threshold, int debounce, button_handler handler, int long_press, int shifter_gpio);
+
+/*
+Log what every touch pad reads right now, next to the threshold it is judged against.
+The auto-calibrated threshold assumes a finger moves the reading by a third, which not
+every pad manages, so this is how you find a value to put in "threshold" by hand.
+*/
+void button_touch_report(void);
 
 void *button_remap(void *client, int gpio, button_handler handler, int long_press, int shifter_gpio);
 void *button_get_client(int gpio);
