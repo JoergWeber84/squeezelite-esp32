@@ -33,7 +33,6 @@
 #include "network_manager.h"
 #include "squeezelite-ota.h"
 #include <math.h>
-#include "audio_controls.h"
 #include "platform_config.h"
 #include "telnet.h"
 #include "messaging.h"
@@ -94,6 +93,8 @@ const DefaultStringVal defaultStringVals[] = {
     {"eth_config", CONFIG_ETH_CONFIG},
     {"i2c_config", CONFIG_I2C_CONFIG},
     {"spi_config", CONFIG_SPI_CONFIG},
+    {"mqtt_config", CONFIG_MQTT_CONFIG},
+    {"rfid_config", CONFIG_RFID_CONFIG},
     {"set_GPIO", CONFIG_SET_GPIO},
     {"sleep_config", ""},
     {"led_brightness", ""},
@@ -135,6 +136,7 @@ static bool bNetworkConnected=false;
 
 // as an exception _init function don't need include
 extern void services_init(void);
+extern void app_svc_init(void);
 extern void services_sleep_init(void);
 extern void	display_init(char *welcome);
 extern void led_vu_init(void);
@@ -434,16 +436,11 @@ void app_main()
 		bypass_network_manager=(strcmp(bypass_wm,"1")==0 ||strcasecmp(bypass_wm,"y")==0);
 	}
 
-	if(!is_recovery_running){
-		ESP_LOGD(TAG,"Getting audio control mapping ");
-		char *actrls_config = config_alloc_get_default(NVS_TYPE_STR, "actrls_config", "", 0);
-		if (actrls_init(actrls_config) == ESP_OK) {
-			ESP_LOGD(TAG,"Initializing audio control buttons type %s", actrls_config);	
-		} else {
-			ESP_LOGD(TAG,"No audio control buttons");
-		}
-		if (actrls_config) free(actrls_config);
-	}
+	/* Everything that only the squeezelite image carries. Calling any of it from here
+	   would link it into recovery as well, and recovery has barely a few KB left in its
+	   partition, so it goes through the per-application hook: the recovery build gets an
+	   empty one. This sits where actrls_init() used to, the boot order is unchanged. */
+	app_svc_init();
 
 	/* start the wifi manager */
 	ESP_LOGD(TAG,"Blinking led");

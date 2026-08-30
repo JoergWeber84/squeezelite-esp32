@@ -13,6 +13,9 @@
 #include "esp_app_format.h"
 #include "tools.h"
 #include "messaging.h"
+#include "audio_controls.h"
+#include "mqtt_svc.h"
+#include "rfid.h"
 
 extern esp_err_t process_recovery_ota(const char * bin_url, char * bin_buffer, uint32_t length);
 static const char * TAG = "squeezelite_cmd";
@@ -44,6 +47,27 @@ extern void register_audio_config(void);
 extern void register_rotary_config(void);
 extern void register_ledvu_config(void);
 extern void register_nvs();
+
+/*
+Start what only the full application needs. This lives here and not in esp_app_main.c
+because that file is shared with the recovery image, which would then have to carry the
+button handling and the MQTT client it never uses - and recovery has no room to spare.
+*/
+void app_svc_init(void) {
+	ESP_LOGD(TAG,"Getting audio control mapping ");
+	char *actrls_config = config_alloc_get_default(NVS_TYPE_STR, "actrls_config", "", 0);
+	if (actrls_init(actrls_config) == ESP_OK) {
+		ESP_LOGD(TAG,"Initializing audio control buttons type %s", actrls_config);
+	} else {
+		ESP_LOGD(TAG,"No audio control buttons");
+	}
+	if (actrls_config) free(actrls_config);
+
+	// the reader registers the Home Assistant announcement that the client replays on
+	// every connect, so it has to exist before the client starts
+	rfid_svc_init();
+	mqtt_svc_init();
+}
 
 void register_optional_cmd(void) {
     #if CONFIG_WITH_CONFIG_UI	

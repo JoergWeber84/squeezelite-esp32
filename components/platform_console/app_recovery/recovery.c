@@ -30,6 +30,10 @@ const __attribute__((section(".rodata_desc"))) esp_app_desc_t esp_app_desc = {
 void register_optional_cmd(void) {
 }    
 
+// recovery runs without MQTT or a tag reader, see app_squeezelite
+void app_svc_init(void) {
+}
+
 int main(int argc, char **argv){
 	return 1;
 }

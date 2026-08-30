@@ -113,6 +113,12 @@ menu "Squeezelite-ESP32"
 		config GPIO_EXP_CONFIG		
 			string
 			default	""
+		config MQTT_CONFIG
+			string
+			default	""
+		config RFID_CONFIG
+			string
+			default	""
 		config SPI_CONFIG
 			string
 			default "dc=27,data=19,clk=18" if TWATCH2020	
@@ -381,6 +387,17 @@ menu "Squeezelite-ESP32"
 			help
 				Set parameters of GPIO extender
 				model=<model>[,addr=<addr>][,base=<100..N>][,count=<0..32>][,intr=<gpio>][,port=dac|system]				
+		config MQTT_CONFIG
+			string "MQTT broker configuration"
+			help
+				Set the MQTT broker used to report events, leave empty to disable MQTT
+				host=mqtt://<ip|name>[:port][,user=<user>][,password=<password>][,topic=<base>][,discovery=<prefix|->]
+				The base topic defaults to squeezelite/<host_name> and discovery to homeassistant
+		config RFID_CONFIG
+			string "RFID reader configuration"
+			help
+				Set parameters of the RFID reader, which uses the shared SPI bus
+				model=RC522,cs=<gpio>[,rst=<gpio>][,speed=<hz>][,poll=<ms>][,hold=<ms>][,topic=<sub>]
 	endmenu
 	
 	menu "LED configuration"

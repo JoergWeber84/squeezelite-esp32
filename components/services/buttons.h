@@ -26,6 +26,16 @@ NOTE: shifter buttons *must* be created before shiftee
 */
 
 void button_create(void *client, int gpio, int type, bool pull, int debounce, button_handler handler, int long_press, int shifter_gpio);
+
+/*
+Same as button_create, but on one of the esp32's capacitive touch pads. The gpio must be
+touch-capable (0, 2, 4, 12, 13, 14, 15, 27, 32 or 33) and touching it always counts as
+"pressed", whatever type the other buttons use. Set threshold to 0 to derive it from the
+idle value measured at creation, which assumes nobody touches the pad while booting.
+Touch pads are polled every 50ms, debounce only sets the long-press timer base.
+*/
+void button_create_touch(void *client, int gpio, int threshold, int debounce, button_handler handler, int long_press, int shifter_gpio);
+
 void *button_remap(void *client, int gpio, button_handler handler, int long_press, int shifter_gpio);
 void *button_get_client(int gpio);
 bool button_is_pressed(int gpio, void *client);

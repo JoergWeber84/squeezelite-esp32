@@ -21,6 +21,7 @@
 #include "esp_task.h"
 #include "driver/gpio.h"
 #include "driver/rmt.h"
+#include "driver/touch_pad.h"
 #include "gpio_exp.h"
 #include "buttons.h"
 #include "services.h"
@@ -47,6 +48,8 @@ static EXT_RAM_ATTR struct button_s {
 	int	long_press;
 	bool long_timer, shifted, shifting;
 	int type, level;	
+	bool touch;
+	int touch_channel, touch_threshold;
 	TimerHandle_t timer;
 } buttons[MAX_BUTTONS];
 
@@ -57,6 +60,20 @@ static struct {
 } polled_gpio[] = { {36, -1, NULL}, {39, -1, NULL}, {-1, -1, NULL} };
 
 static TimerHandle_t polled_timer;
+
+#if CONFIG_IDF_TARGET_ESP32
+/*
+The esp32 touch sensor reads *lower* when a finger loads the pad, so a pad counts as
+touched below its threshold. Which channel sits on which GPIO is fixed by the silicon.
+*/
+#define TOUCH_POLL			50
+#define TOUCH_FILTER		10
+#define TOUCH_THRESHOLD_PCT	70
+
+static const int touch_gpio[TOUCH_PAD_MAX] = { 4, 0, 2, 15, 13, 12, 14, 27, 33, 32 };
+static TimerHandle_t touch_timer;
+static bool touch_started;
+#endif
 
 static EXT_RAM_ATTR struct encoder {
 	QueueHandle_t queue;
@@ -116,8 +133,10 @@ static void IRAM_ATTR gpio_isr_handler(void* arg)
  */
 static void buttons_timer_handler( TimerHandle_t xTimer ) {
 	struct button_s *button = (struct button_s*) pvTimerGetTimerID (xTimer);
+	// touch pads are polled, so their level is already up to date
+	if (button->touch) buttons_handler(button, button->level);
 	// if this is an expanded GPIO, must give cache a chance
-	buttons_handler(button, gpio_exp_get_level(button->gpio, (button->debounce * 3) / 2, NULL));
+	else buttons_handler(button, gpio_exp_get_level(button->gpio, (button->debounce * 3) / 2, NULL));
 }
 
 /****************************************************************************************
@@ -135,6 +154,29 @@ static void buttons_polling( TimerHandle_t xTimer ) {
 		}	
 	}	
 }
+
+#if CONFIG_IDF_TARGET_ESP32
+/****************************************************************************************
+ * Touch pads polling timer
+ */
+static void touch_polling( TimerHandle_t xTimer ) {
+	for (int i = 0; i < n_buttons; i++) {
+		uint16_t value;
+		int level;
+
+		if (!buttons[i].touch) continue;
+		if (touch_pad_read_filtered(buttons[i].touch_channel, &value) != ESP_OK) continue;
+
+		// a loaded pad reads below the threshold and that always means 'pressed'
+		level = value < buttons[i].touch_threshold ? buttons[i].type : !buttons[i].type;
+
+		if (level != buttons[i].level) {
+			ESP_LOGD(TAG, "touch pad gpio:%u value:%u level:%u", buttons[i].gpio, value, level);
+			buttons_handler(buttons + i, level);
+		}
+	}
+}
+#endif
 
 /****************************************************************************************
  * Buttons timer handler for press/longpress
@@ -261,12 +303,11 @@ void dummy_handler(void *id, button_event_e event, button_press_e press) {
 }
 
 /****************************************************************************************
- * Create buttons 
+ * Reserve a button slot and wire it to its shifter. This is the part that is common to
+ * GPIO and capacitive touch buttons, the caller sets up the pin itself.
  */
-void button_create(void *client, int gpio, int type, bool pull, int debounce, button_handler handler, int long_press, int shifter_gpio) { 
-	if (n_buttons >= MAX_BUTTONS) return;
-
-	ESP_LOGI(TAG, "Creating button using GPIO %u, type %u, pull-up/down %u, long press %u shifter %d", gpio, type, pull, long_press, shifter_gpio);
+static struct button_s *button_register(void *client, int gpio, int type, int debounce, button_handler handler, int long_press, int shifter_gpio) { 
+	if (n_buttons >= MAX_BUTTONS) return NULL;
 
 	if (!n_buttons) {
 		button_queue = xQueueCreate(BUTTON_QUEUE_LEN, sizeof(struct button_s));
@@ -302,6 +343,21 @@ void button_create(void *client, int gpio, int type, bool pull, int debounce, bu
 		}	
 	}
 
+	n_buttons++;
+
+	return buttons + n_buttons - 1;
+}
+
+/****************************************************************************************
+ * Create buttons 
+ */
+void button_create(void *client, int gpio, int type, bool pull, int debounce, button_handler handler, int long_press, int shifter_gpio) { 
+	struct button_s *button = button_register(client, gpio, type, debounce, handler, long_press, shifter_gpio);
+
+	if (!button) return;
+
+	ESP_LOGI(TAG, "Creating button using GPIO %u, type %u, pull-up/down %u, long press %u shifter %d", gpio, type, pull, long_press, shifter_gpio);
+
 	gpio_pad_select_gpio_x(gpio);
 	gpio_set_direction_x(gpio, GPIO_MODE_INPUT);
 
@@ -316,7 +372,7 @@ void button_create(void *client, int gpio, int type, bool pull, int debounce, bu
 	}
 	
 	// and initialize level ...
-	buttons[n_buttons].level = gpio_get_level_x(gpio);
+	button->level = gpio_get_level_x(gpio);
 	
 	// nasty ESP32 bug: fire-up constantly INT on GPIO 36/39 if ADC1, AMP, Hall used which WiFi does when PS is activated
 	for (int i = 0; polled_gpio[i].gpio != -1; i++) if (polled_gpio[i].gpio == gpio) {
@@ -325,7 +381,7 @@ void button_create(void *client, int gpio, int type, bool pull, int debounce, bu
 			xTimerStart(polled_timer, portMAX_DELAY);
 		}	
 	
-		polled_gpio[i].button = buttons + n_buttons;					
+		polled_gpio[i].button = button;					
 		polled_gpio[i].level = gpio_get_level(gpio);
 		ESP_LOGW(TAG, "creating polled gpio %u, level %u", gpio, polled_gpio[i].level);		
 	
@@ -337,11 +393,63 @@ void button_create(void *client, int gpio, int type, bool pull, int debounce, bu
 	if (gpio != -1) {
 		// we need any edge detection
 		gpio_set_intr_type_x(gpio, GPIO_INTR_ANYEDGE);
-		gpio_isr_handler_add_x(gpio, gpio_isr_handler, buttons + n_buttons);
+		gpio_isr_handler_add_x(gpio, gpio_isr_handler, button);
 		gpio_intr_enable_x(gpio);
 	}	
+}	
 
-	n_buttons++;
+/****************************************************************************************
+ * Create a button on a capacitive touch pad
+ */
+void button_create_touch(void *client, int gpio, int threshold, int debounce, button_handler handler, int long_press, int shifter_gpio) {
+#if CONFIG_IDF_TARGET_ESP32
+	struct button_s *button;
+	int channel = -1;
+
+	for (int i = 0; i < TOUCH_PAD_MAX; i++) if (touch_gpio[i] == gpio) channel = i;
+
+	if (channel == -1) {
+		ESP_LOGE(TAG, "GPIO %u is not a capacitive touch pad", gpio);
+		return;
+	}
+
+	// the touch controller and its software filter are shared by all pads
+	if (!touch_started) {
+		touch_pad_init();
+		touch_pad_set_fsm_mode(TOUCH_FSM_MODE_TIMER);
+		touch_pad_set_voltage(TOUCH_HVOLT_2V7, TOUCH_LVOLT_0V5, TOUCH_HVOLT_ATTEN_1V);
+		touch_pad_filter_start(TOUCH_FILTER);
+		touch_started = true;
+	}
+
+	touch_pad_config(channel, 0);
+
+	// give the filter a few rounds before trusting what it reads
+	vTaskDelay(pdMS_TO_TICKS(TOUCH_FILTER * 5));
+
+	if (!threshold) {
+		uint16_t idle = 0;
+		touch_pad_read_filtered(channel, &idle);
+		threshold = (idle * TOUCH_THRESHOLD_PCT) / 100;
+		ESP_LOGI(TAG, "touch pad GPIO %u idles at %u, threshold set to %d", gpio, idle, threshold);
+	}
+
+	if ((button = button_register(client, gpio, BUTTON_LOW, debounce, handler, long_press, shifter_gpio)) == NULL) return;
+
+	ESP_LOGI(TAG, "Creating touch button using GPIO %u, threshold %d, long press %u shifter %d", gpio, threshold, long_press, shifter_gpio);
+
+	button->touch = true;
+	button->touch_channel = channel;
+	button->touch_threshold = threshold;
+	button->level = !button->type;
+
+	if (!touch_timer) {
+		touch_timer = xTimerCreate("touchPolling", pdMS_TO_TICKS(TOUCH_POLL), pdTRUE, NULL, touch_polling);
+		xTimerStart(touch_timer, portMAX_DELAY);
+	}
+#else
+	ESP_LOGE(TAG, "capacitive touch buttons are only supported on the esp32");
+#endif
 }	
 
 /****************************************************************************************

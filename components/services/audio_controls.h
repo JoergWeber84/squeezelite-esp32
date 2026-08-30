@@ -37,6 +37,8 @@ typedef struct actrl_config_s {
 	int	debounce;
 	int long_press;
 	int shifter_gpio;
+	bool touch;
+	int threshold;
 	actrls_action_detail_t normal[2], longpress[2], shifted[2], longshifted[2];	// [0] keypressed, [1] keyreleased
 } actrls_config_t;
 

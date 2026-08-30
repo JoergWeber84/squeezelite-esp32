@@ -494,7 +494,51 @@ There is no good or bad option, it's your choice. Use the NVS parameter "lms_ctr
 	
 **Note that gpio 36 and 39 are input only and cannot use interrupt. When using them for a button, a 100ms polling is started which is expensive. Long press is also likely to not work very well**
 
-**Note:** Touch buttons that can be found on some board like the LyraT V4.3 are not supported currently.
+#### Capacitive touch buttons
+The esp32 can sense a finger on a bare pad or a piece of copper tape connected to one of its ten touch pins: **GPIO 0, 2, 4, 12, 13, 14, 15, 27, 32 and 33**. Add `"touch": true` to a button definition to use one of these instead of a regular input. Everything else - `long_press`, `shifter_gpio`, the remapping profiles - works exactly as for a wired button, and `pull` and `type` are simply ignored because touching the pad always counts as pressed.
+
+```json
+[{"gpio":32, "touch":true, "long_press":1000, "normal":{"pressed":"ACTRLS_TOGGLE"}, "longpress":{"pressed":"ACTRLS_POWER"}},
+ {"gpio":33, "touch":true, "normal":{"pressed":"ACTRLS_VOLUP"}},
+ {"gpio":27, "touch":true, "normal":{"pressed":"ACTRLS_VOLDOWN"}}]
+```
+
+The pads are read through the chip's own filter and polled every 50ms. At boot, the idle value of each pad is measured and the trigger point is set to 70% of it, so **do not touch the pads while the player is starting**. If that auto-calibration does not suit your hardware (large pads, thick overlay, long wires), set the raw trigger value yourself with `"threshold": <value>`; a touched pad reads *below* that value. Run the firmware with debug logs on the `buttons` tag to see the values your pads actually produce.
+
+Note that touch pins are shared with other functions: GPIO 12/13/14/15 are the JTAG pins, GPIO 0 is the boot strapping pin and several of them are also used by SD-card or SPI wiring on ready-made boards, so pick pads that your board leaves free.
+
+### RFID reader
+An MFRC522 ("RC522") reader can be connected to the shared SPI bus to scan MIFARE/NFC tags, which are then published over [MQTT](#mqtt) - typically to trigger a Home Assistant automation that starts a playlist. Wire SCK/MOSI/MISO to the pins declared in `spi_config`, give the reader its own chip select and optionally connect its RST pin. Set the NVS parameter `rfid_config`:
+
+```
+model=RC522,cs=<gpio>[,rst=<gpio>][,speed=<hz>][,poll=<ms>][,hold=<ms>][,topic=<sub topic>]
+```
+- `cs` is mandatory, `rst` defaults to none (the chip is only reset by software)
+- `speed` is the SPI clock, 5000000 by default (the RC522 tolerates up to 10 MHz)
+- `poll` is how often the field is checked, 200ms by default
+- `hold` is how long a tag left on the reader is ignored before being reported again, 5000ms by default
+- `topic` is appended to the MQTT base topic, `rfid` by default
+
+For example `model=RC522,cs=21,rst=22` with `spi_config` set to `mosi=23,miso=19,clk=18`. The reader is only started when a tag reader answers on that chip select, so check the boot log if nothing happens. UIDs of 4, 7 and 10 bytes are all supported and reported as uppercase hex without separator.
+
+### MQTT
+Set the NVS parameter `mqtt_config` to report events to an MQTT broker:
+
+```
+host=mqtt://<ip|name>[:port][,user=<user>][,password=<password>][,topic=<base topic>][,discovery=<prefix|->]
+```
+- `host` is a full URI, e.g. `mqtt://192.168.1.10:1883` - leave the whole parameter empty to disable MQTT
+- `topic` defaults to `squeezelite/<host_name>`
+- `discovery` is the Home Assistant discovery prefix, `homeassistant` by default, set it to `-` to publish no discovery message
+
+**Note that no value may contain a comma, as that is the separator of the configuration string itself, and that the password is stored in NVS as plain text like every other parameter.**
+
+The client reconnects on its own, so a broker that is down or a network that is not up yet is not a problem. It publishes `online` on `<base topic>/availability` when connected and registers `offline` as its last will, so the broker reports the player as gone when it drops off.
+
+#### Home Assistant
+When discovery is enabled, the player announces its reader as a Home Assistant *tag scanner* and every scan raises a `tag_scanned` event that you can use directly as an automation trigger, with the tag UID as the tag id. Nothing needs to be added to `configuration.yaml`, but the MQTT integration must be set up and pointed at the same broker.
+
+Scans are also published as plain JSON on `<base topic>/<rfid topic>` (by default `squeezelite/<host_name>/rfid`), for example `{"uid":"04A1B2C3","sak":8,"len":4}`, so they can be consumed by anything else that speaks MQTT. These messages are deliberately not retained: a tag scan is an event, and a retained one would fire again on every restart.
 
 ### Ethernet 
 Wired ethernet is supported by esp32 with various options but squeezeESP32 is only supporting a Microchip LAN8720 with a RMII interface like [this](https://www.aliexpress.com/item/32858432526.html) or SPI-ethernet bridges like Davicom DM9051 [that](https://www.amazon.com/dp/B08JLFWX9Z) or W5500 like [this](https://www.aliexpress.com/item/32312441357.html).
