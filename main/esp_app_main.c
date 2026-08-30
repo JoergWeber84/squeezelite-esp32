@@ -137,6 +137,7 @@ static bool bNetworkConnected=false;
 // as an exception _init function don't need include
 extern void services_init(void);
 extern void app_svc_init(void);
+extern void app_svc_start(void);
 extern void services_sleep_init(void);
 extern void	display_init(char *welcome);
 extern void led_vu_init(void);
@@ -467,6 +468,10 @@ void app_main()
 	MEMTRACE_PRINT_DELTA_MESSAGE("Starting Console");
 	console_start();
 	MEMTRACE_PRINT_DELTA_MESSAGE("Console started");
+
+	/* Second half of the per-application hook, for anything that needs the network
+	   stack to exist. Same reason as app_svc_init: keep it out of recovery. */
+	app_svc_start();
 	if(fwurl && strlen(fwurl)>0){
 		if(is_recovery_running){
 			while(!bNetworkConnected){

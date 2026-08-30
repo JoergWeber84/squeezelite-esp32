@@ -52,6 +52,9 @@ extern void register_nvs();
 Start what only the full application needs. This lives here and not in esp_app_main.c
 because that file is shared with the recovery image, which would then have to carry the
 button handling and the MQTT client it never uses - and recovery has no room to spare.
+
+Called from where actrls_init() used to sit, which is before the network comes up, so
+nothing in here may touch the network. That is what app_svc_start() below is for.
 */
 void app_svc_init(void) {
 	ESP_LOGD(TAG,"Getting audio control mapping ");
@@ -63,9 +66,17 @@ void app_svc_init(void) {
 	}
 	if (actrls_config) free(actrls_config);
 
-	// the reader registers the Home Assistant announcement that the client replays on
-	// every connect, so it has to exist before the client starts
+	// the reader only needs the SPI bus, and it registers the Home Assistant announcement
+	// that the client replays on every connect, so it has to exist before that client
 	rfid_svc_init();
+}
+
+/*
+The same, but after the network manager has been started. The MQTT client spawns a task
+that goes straight for the TCP/IP stack, so starting it any earlier crashes the system
+rather than just failing to connect.
+*/
+void app_svc_start(void) {
 	mqtt_svc_init();
 }
 

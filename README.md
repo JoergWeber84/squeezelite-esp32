@@ -516,7 +516,7 @@ model=RC522,cs=<gpio>[,rst=<gpio>][,speed=<hz>][,poll=<ms>][,hold=<ms>][,topic=<
 - `cs` is mandatory, `rst` defaults to none (the chip is only reset by software)
 - `speed` is the SPI clock, 5000000 by default (the RC522 tolerates up to 10 MHz)
 - `poll` is how often the field is checked, 200ms by default
-- `hold` is how long a tag left on the reader is ignored before being reported again, 5000ms by default
+- `hold` is how long the same tag has to stay away before it counts as a new scan, 5000ms by default. A tag left lying on the reader is reported once and then not again, which is what you want for an event: a different tag is always reported immediately
 - `topic` is appended to the MQTT base topic, `rfid` by default
 
 For example `model=RC522,cs=21,rst=22` with `spi_config` set to `mosi=23,miso=19,clk=18`. The reader is only started when a tag reader answers on that chip select, so check the boot log if nothing happens. UIDs of 4, 7 and 10 bytes are all supported and reported as uppercase hex without separator.

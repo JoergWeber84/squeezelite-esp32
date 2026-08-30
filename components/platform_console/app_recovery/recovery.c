@@ -34,6 +34,9 @@ void register_optional_cmd(void) {
 void app_svc_init(void) {
 }
 
+void app_svc_start(void) {
+}
+
 int main(int argc, char **argv){
 	return 1;
 }

@@ -13,6 +13,7 @@
 #include "esp_attr.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include "mqtt_client.h"
 #include "platform_config.h"
 #include "mqtt_svc.h"
@@ -144,10 +145,12 @@ void mqtt_svc_init(void) {
 	if (!strcmp(mqtt_context.discovery, "-")) *mqtt_context.discovery = '\0';
 
 	/*
-	The client is started before the network manager brings up the interface, so make
-	sure the default event loop it posts to exists. It is normally created further down
-	by esp_netif, and creating it twice is not an error we care about.
+	The client's task goes straight for the TCP/IP stack, so lwIP has to exist by now
+	even though no interface may be up yet - failing to connect is fine, a missing stack
+	is not. Both calls below are no-ops when the network manager got there first, which
+	it normally has.
 	*/
+	esp_netif_init();
 	esp_event_loop_create_default();
 
 	esp_mqtt_client_config_t client_config = {

@@ -16,9 +16,11 @@ Start the MQTT client from the "mqtt_config" NVS entry:
 	host=mqtt://<ip|name>[:port][,user=<user>][,password=<password>]
 	[,topic=<base topic>][,discovery=<prefix|->]
 
-The client reconnects on its own, so it can be started before the network is up.
-Nothing happens when no host is configured. Note that values cannot contain a
-comma, that is the separator of the configuration string itself.
+The client reconnects on its own, so the broker being unreachable is not a problem.
+The network stack does have to be initialized by the time this is called, though:
+the client's task talks to it immediately. Nothing happens when no host is
+configured. Note that values cannot contain a comma, that is the separator of the
+configuration string itself.
 */
 void mqtt_svc_init(void);
 
