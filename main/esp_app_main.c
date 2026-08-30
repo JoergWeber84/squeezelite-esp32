@@ -95,6 +95,7 @@ const DefaultStringVal defaultStringVals[] = {
     {"i2c_config", CONFIG_I2C_CONFIG},
     {"spi_config", CONFIG_SPI_CONFIG},
     {"mqtt_config", CONFIG_MQTT_CONFIG},
+    {"mqtt_interval", ""},
     {"rfid_config", CONFIG_RFID_CONFIG},
     {"set_GPIO", CONFIG_SET_GPIO},
     {"sleep_config", ""},

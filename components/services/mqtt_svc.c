@@ -34,10 +34,9 @@ static EXT_RAM_ATTR struct {
 } mqtt_context;
 
 /****************************************************************************************
- * Topics are assembled from strings of unknown length, which snprintf cannot be talked
- * out of warning about. Going through vsnprintf keeps the truncation check ours.
+ * Shared by everything that builds a topic or a payload here, see the header
  */
-static bool format_topic(char *dst, size_t size, const char *fmt, ...) {
+bool mqtt_svc_format(char *dst, size_t size, const char *fmt, ...) {
 	va_list args;
 	int len;
 
@@ -46,7 +45,7 @@ static bool format_topic(char *dst, size_t size, const char *fmt, ...) {
 	va_end(args);
 
 	if (len < 0 || (size_t) len >= size) {
-		ESP_LOGW(TAG, "topic does not fit, truncated to %s", dst);
+		ESP_LOGW(TAG, "does not fit, truncated to %s", dst);
 		return false;
 	}
 
@@ -133,13 +132,13 @@ void mqtt_svc_init(void) {
 	// default the base topic to the device's own name, which is what the user renames
 	if (!*topic) {
 		char *name = config_alloc_get_str("host_name", NULL, "squeezelite");
-		format_topic(topic, TOPIC_LEN, "squeezelite/%s", name ? name : "esp32");
+		mqtt_svc_format(topic, TOPIC_LEN, "squeezelite/%s", name ? name : "esp32");
 		if (name) free(name);
 	}
 
 	sanitize_topic(topic);
 	strncpy(mqtt_context.base, topic, TOPIC_LEN - 1);
-	format_topic(mqtt_context.availability, sizeof(mqtt_context.availability), "%s/availability", mqtt_context.base);
+	mqtt_svc_format(mqtt_context.availability, sizeof(mqtt_context.availability), "%s/availability", mqtt_context.base);
 
 	// a single '-' as prefix is how discovery is switched off
 	if (!strcmp(mqtt_context.discovery, "-")) *mqtt_context.discovery = '\0';
@@ -212,8 +211,8 @@ bool mqtt_svc_publish(const char *subtopic, const char *payload, int qos, bool r
 	if (!mqtt_context.client || !mqtt_context.connected) return false;
 
 	// a leading '/' escapes the device's base topic
-	if (*subtopic == '/') format_topic(topic, TOPIC_LEN, "%s", subtopic + 1);
-	else format_topic(topic, TOPIC_LEN, "%s/%s", mqtt_context.base, subtopic);
+	if (*subtopic == '/') mqtt_svc_format(topic, TOPIC_LEN, "%s", subtopic + 1);
+	else mqtt_svc_format(topic, TOPIC_LEN, "%s/%s", mqtt_context.base, subtopic);
 
 	if (esp_mqtt_client_publish(mqtt_context.client, topic, payload, 0, qos, retain) < 0) {
 		ESP_LOGW(TAG, "cannot publish on %s", topic);

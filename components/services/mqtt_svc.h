@@ -9,6 +9,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 
 /*
 Start the MQTT client from the "mqtt_config" NVS entry:
@@ -31,6 +32,14 @@ const char *mqtt_svc_topic_base(void);
 
 // Home Assistant discovery prefix, e.g. "homeassistant" - NULL when discovery is off
 const char *mqtt_svc_discovery_prefix(void);
+
+/*
+Format into dst, reporting truncation rather than letting it pass unnoticed. Topics and
+payloads are built from strings whose length is not known at compile time, which snprintf
+cannot be talked out of warning about under -Werror=format-truncation; going through
+vsnprintf keeps the check ours. Returns false when the result did not fit.
+*/
+bool mqtt_svc_format(char *dst, size_t size, const char *fmt, ...);
 
 /*
 Publish under the device's base topic, or on an absolute topic when subtopic starts

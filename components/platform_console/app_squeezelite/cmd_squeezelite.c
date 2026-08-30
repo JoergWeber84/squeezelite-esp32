@@ -17,6 +17,7 @@
 #include "buttons.h"
 #include "mqtt_svc.h"
 #include "rfid.h"
+#include "telemetry.h"
 
 extern esp_err_t process_recovery_ota(const char * bin_url, char * bin_buffer, uint32_t length);
 static const char * TAG = "squeezelite_cmd";
@@ -78,6 +79,8 @@ that goes straight for the TCP/IP stack, so starting it any earlier crashes the 
 rather than just failing to connect.
 */
 void app_svc_start(void) {
+	// both register announcements that the client replays on connect, so they go first
+	telemetry_svc_init();
 	mqtt_svc_init();
 }
 

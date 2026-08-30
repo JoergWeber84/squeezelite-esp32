@@ -549,8 +549,26 @@ host=mqtt://<ip|name>[:port][,user=<user>][,password=<password>][,topic=<base to
 
 The client reconnects on its own, so a broker that is down or a network that is not up yet is not a problem. It publishes `online` on `<base topic>/availability` when connected and registers `offline` as its last will, so the broker reports the player as gone when it drops off.
 
+#### Telemetry
+
+Every `mqtt_interval` seconds (60 by default, 0 switches it off) the player publishes what it knows about itself as one retained JSON object on `<base topic>/state`:
+
+```json
+{"rssi":-77,"bssid":"5a:d4:f7:77:8b:dc","channel":1,"ip":"10.11.2.151","uptime":61,
+ "reset":"power on","heap":83211,"psram":840727,"version":"...","battery":4.23,"level":100}
+```
+
+- `rssi`, `bssid`, `channel` - which access point the player is on and how well it hears it. The access point matters as much as the signal: in a mesh, a player that keeps losing its connection is often stuck on the wrong one rather than simply too far away
+- `ip` - the address of whichever interface is up
+- `uptime` in seconds and `reset` in words (`power on`, `panic`, `task watchdog`, `brownout`, `deep sleep`, ...), which together make an unnoticed restart and its cause visible
+- `heap` and `psram` - free memory, internal and external, for spotting a slow leak
+- `version` - the firmware actually running, taken from `version.txt`
+- `battery` in volts and `level` in percent, only present when a battery is configured
+
+The two battery fields are left out entirely when `bat_config` is empty, rather than reporting a constant zero.
+
 #### Home Assistant
-When discovery is enabled, the player announces its reader as a Home Assistant *tag scanner* and every scan raises a `tag_scanned` event that you can use directly as an automation trigger, with the tag UID as the tag id. Nothing needs to be added to `configuration.yaml`, but the MQTT integration must be set up and pointed at the same broker.
+When discovery is enabled, the player announces its reader as a Home Assistant *tag scanner* and every scan raises a `tag_scanned` event that you can use directly as an automation trigger, with the tag UID as the tag id. Every telemetry field is announced as its own sensor at the same time, marked as diagnostic so it stays off the main device card. All of them share one device entry and point at the availability topic, so they go unavailable together when the player drops off rather than freezing at their last value. Nothing needs to be added to `configuration.yaml`, but the MQTT integration must be set up and pointed at the same broker.
 
 Scans are also published as plain JSON on `<base topic>/<rfid topic>` (by default `squeezelite/<host_name>/rfid`), for example `{"uid":"04A1B2C3","sak":8,"len":4}`, so they can be consumed by anything else that speaks MQTT. These messages are deliberately not retained: a tag scan is an event, and a retained one would fire again on every restart.
 

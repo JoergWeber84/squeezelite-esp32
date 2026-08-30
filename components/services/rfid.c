@@ -6,7 +6,6 @@
  *
  */
 
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,26 +43,6 @@ static EXT_RAM_ATTR struct {
 } rfid_context;
 
 /****************************************************************************************
- * Topics and payloads embed strings of unknown length, which snprintf cannot be talked
- * out of warning about. Going through vsnprintf keeps the truncation check ours.
- */
-static bool format_buffer(char *dst, size_t size, const char *fmt, ...) {
-	va_list args;
-	int len;
-
-	va_start(args, fmt);
-	len = vsnprintf(dst, size, fmt, args);
-	va_end(args);
-
-	if (len < 0 || (size_t) len >= size) {
-		ESP_LOGW(TAG, "value does not fit, truncated to %s", dst);
-		return false;
-	}
-
-	return true;
-}
-
-/****************************************************************************************
  * Announce the reader as a Home Assistant tag scanner. HA turns anything published on
  * our topic into a tag_scanned event that automations can trigger on.
  */
@@ -73,8 +52,8 @@ static void publish_discovery(void) {
 
 	if (!prefix) return;
 
-	format_buffer(topic, sizeof(topic), "/%s/tag/%s/config", prefix, rfid_context.device_id);
-	format_buffer(payload, sizeof(payload),
+	mqtt_svc_format(topic, sizeof(topic), "/%s/tag/%s/config", prefix, rfid_context.device_id);
+	mqtt_svc_format(payload, sizeof(payload),
 			 "{\"topic\":\"%s/%s\",\"value_template\":\"{{ value_json.uid }}\","
 			 "\"device\":{\"identifiers\":[\"%s\"],\"name\":\"%s\","
 			 "\"manufacturer\":\"squeezelite-esp32\",\"model\":\"RC522\"}}",
@@ -131,7 +110,7 @@ static void report_tag(const rc522_uid_t *uid) {
 
 	ESP_LOGI(TAG, "tag %s (sak 0x%02x)", uid_str, uid->sak);
 
-	format_buffer(payload, sizeof(payload), "{\"uid\":\"%s\",\"sak\":%u,\"len\":%u}",
+	mqtt_svc_format(payload, sizeof(payload), "{\"uid\":\"%s\",\"sak\":%u,\"len\":%u}",
 				  uid_str, uid->sak, uid->len);
 
 	// tag scans are events, publishing them retained would replay them on every restart
