@@ -47,6 +47,7 @@ static const char *TAG = "rc522";
 
 // PICC commands (ISO/IEC 14443-3)
 #define PICC_REQA			0x26
+#define PICC_WUPA			0x52
 #define PICC_HLTA			0x50
 #define PICC_SEL_CL1		0x93
 #define PICC_SEL_CL2		0x95
@@ -215,13 +216,18 @@ static bool transceive(rc522_handle_t dev, const uint8_t *send, size_t send_len,
 }
 
 /****************************************************************************************
- * REQA - is there an idle card in the field
+ * WUPA - is there a card in the field, awake or not
+ *
+ * Deliberately not REQA: every poll ends by halting the card, and a halted card ignores
+ * REQA until it leaves the field and comes back. Asking with REQA would therefore see a
+ * tag exactly once and never again while it rests on the reader. WUPA answers for cards
+ * in both the idle and the halted state, which is what presence detection needs.
  */
-static bool request_a(rc522_handle_t dev) {
-	uint8_t command = PICC_REQA, atqa[2], valid_bits = 0;
+static bool wakeup_a(rc522_handle_t dev) {
+	uint8_t command = PICC_WUPA, atqa[2], valid_bits = 0;
 	size_t len = sizeof(atqa);
 
-	// REQA is a 7 bit short frame and the answer must be a complete 2 byte ATQA
+	// WUPA is a 7 bit short frame and the answer must be a complete 2 byte ATQA
 	write_reg(dev, REG_COLL, 0x80);
 	if (!transceive(dev, &command, 1, 7, atqa, &len, &valid_bits)) return false;
 
@@ -381,7 +387,7 @@ uint8_t rc522_version(rc522_handle_t dev) {
 bool rc522_poll(rc522_handle_t dev, rc522_uid_t *uid) {
 	bool found;
 
-	if (!dev || !request_a(dev)) return false;
+	if (!dev || !wakeup_a(dev)) return false;
 
 	found = select_card(dev, uid);
 	halt_card(dev);

@@ -39,6 +39,7 @@ static EXT_RAM_ATTR struct {
 	char device_id[64];
 	char last_uid[UID_STR_LEN];
 	uint32_t last_seen;
+	bool broker_seen;
 	int poll_ms, hold_ms;
 } rfid_context;
 
@@ -86,6 +87,26 @@ static void publish_discovery(void) {
 }
 
 /****************************************************************************************
+ * Called every time the client connects
+ */
+static void on_broker_connected(void) {
+	publish_discovery();
+
+	/*
+	A tag already lying on the reader when the player boots is read seconds before the
+	broker is up, and the repeat guard in report_tag would then keep it quiet for as long
+	as it stays there. Forget it once, so whatever rests on the reader at the moment the
+	broker first appears is announced. Later reconnects are deliberately left alone:
+	replaying a scan that nobody performed would fire automations for nothing.
+	*/
+	if (!rfid_context.broker_seen) {
+		rfid_context.broker_seen = true;
+		rfid_context.last_uid[0] = '\0';
+		rfid_context.last_seen = 0;
+	}
+}
+
+/****************************************************************************************
  *
  */
 static void report_tag(const rc522_uid_t *uid) {
@@ -115,7 +136,7 @@ static void report_tag(const rc522_uid_t *uid) {
 
 	// tag scans are events, publishing them retained would replay them on every restart
 	if (!mqtt_svc_publish(rfid_context.topic, payload, 0, false)) {
-		ESP_LOGW(TAG, "tag %s could not be published, broker not connected", uid_str);
+		ESP_LOGW(TAG, "tag %s not published yet, broker not connected", uid_str);
 	}
 }
 
@@ -196,7 +217,7 @@ void rfid_svc_init(void) {
 	}
 
 	// discovery is retained and must be re-sent whenever the broker session restarts
-	mqtt_svc_set_connect_hook(publish_discovery);
+	mqtt_svc_set_connect_hook(on_broker_connected);
 
 	static DRAM_ATTR StaticTask_t task_buffer __attribute__ ((aligned (4)));
 	static EXT_RAM_ATTR StackType_t task_stack[RFID_STACK_SIZE] __attribute__ ((aligned (4)));
