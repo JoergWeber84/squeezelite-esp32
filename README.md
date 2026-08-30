@@ -493,6 +493,8 @@ The benefit of the "raw" mode is that you can build a player which is as close a
 It must also be on the port the player expects. Squeezelite only learns the CLI port from the UDP discovery response, so a player that was given its server with `-s <address>` - which is what you need when the server sits in another subnet and broadcasts do not reach it - keeps using the default 9090 whatever LMS is configured for. If something else on that machine holds 9090, every button silently does nothing: the player connects, sends its command and no one is listening. Check it with `version ?` on port 9090, an LMS answers with its version.
 
 There is no good or bad option, it's your choice. Use the NVS parameter "lms_ctrls_raw" to change that option
+
+A volume button asks LMS for its own idea of a step, which is one point out of a hundred - a lot of presses to cross a room. Set the NVS parameter `volume_step` to a number and the player asks for that change directly instead, so `5` moves five points per press. Leave it empty or at 0 to keep the server's behaviour. It has no effect in raw mode, where the server sees the button and decides for itself.
 	
 **Note that gpio 36 and 39 are input only and cannot use interrupt. When using them for a button, a 100ms polling is started which is expensive. Long press is also likely to not work very well**
 

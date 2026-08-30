@@ -54,6 +54,7 @@ static int cli_sock = -1;
 static u8_t mac[6];
 static void	(*chained_notify)(in_addr_t, u16_t, u16_t);
 static bool raw_mode;
+static int volume_step;
 
 static void cli_send_cmd(char *cmd);
 
@@ -130,8 +131,35 @@ static void lms_##N (bool pressed) {    	\
 LMS_CALLBACK(power, POWER_FRONT, power)
 LMS_CALLBACK(play, PLAY, play.single)
 
-LMS_CALLBACK(volup, VOLUP_FRONT, volup)
-LMS_CALLBACK(voldown, VOLDOWN_FRONT, voldown)
+/*
+"button volup" leaves the step to LMS, which moves by one. When volume_step is set we
+ask for the change directly instead, which the server takes as a delta on the same 0..100
+scale it shows in its interface. Raw mode has no say in this: there the server sees the
+button and decides on its own.
+*/
+static void lms_volup(bool pressed) {
+	if (raw_mode) {
+		sendBUTN(BUTN_VOLUP_FRONT, pressed);
+	} else if (volume_step > 0) {
+		char cmd[32];
+		snprintf(cmd, sizeof(cmd), "mixer volume +%d", volume_step);
+		cli_send_cmd(cmd);
+	} else {
+		cli_send_cmd("button volup");
+	}
+}
+
+static void lms_voldown(bool pressed) {
+	if (raw_mode) {
+		sendBUTN(BUTN_VOLDOWN_FRONT, pressed);
+	} else if (volume_step > 0) {
+		char cmd[32];
+		snprintf(cmd, sizeof(cmd), "mixer volume -%d", volume_step);
+		cli_send_cmd(cmd);
+	} else {
+		cli_send_cmd("button voldown");
+	}
+}
 
 LMS_CALLBACK(rew, REW, rew.repeat)
 LMS_CALLBACK(fwd, FWD, fwd.repeat)
@@ -245,8 +273,17 @@ void sb_controls_init(void) {
 	char *p = config_alloc_get_default(NVS_TYPE_STR, "lms_ctrls_raw", "n", 0);
 	raw_mode = p && (*p == '1' || *p == 'Y' || *p == 'y');
 	free(p);
-	
-	LOG_INFO("initializing audio (buttons/rotary/ir) controls (raw:%u)", raw_mode);
+
+	// 0 or unset keeps the server's own step, which is one point per press
+	p = config_alloc_get_default(NVS_TYPE_STR, "volume_step", "", 0);
+	if (p) {
+		volume_step = atoi(p);
+		if (volume_step < 0 || volume_step > 100) volume_step = 0;
+		free(p);
+	}
+
+	LOG_INFO("initializing audio (buttons/rotary/ir) controls (raw:%u volume step:%d)",
+			 raw_mode, volume_step);
 	
 	get_mac(mac);
 	actrls_set_default(LMS_controls, raw_mode, NULL, ir_handler);

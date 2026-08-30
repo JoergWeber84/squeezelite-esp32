@@ -87,6 +87,7 @@ const DefaultStringVal defaultStringVals[] = {
     {"loudness", "0"},
     {"actrls_config", ""},
     {"lms_ctrls_raw", "n"},
+    {"volume_step", ""},
     {"rotary_config", CONFIG_ROTARY_ENCODER},
 	{"volume_rotary", CONFIG_VOLUME_ROTARY_ENCODER},
     {"display_config", CONFIG_DISPLAY_CONFIG},
