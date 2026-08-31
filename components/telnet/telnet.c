@@ -63,6 +63,8 @@ static size_t send_chunk = 512;
 static size_t log_buf_size = 4*1024;
 static bool bIsEnabled=false;
 static int partnerSocket;
+// set as soon as the client stops taking data, see handle_telnet_events
+static bool bClientStalled;
 static telnet_t *tnHandle;
 static bool bMirrorToUART;
 
@@ -168,7 +170,12 @@ static void telnet_task(void *data) {
 		int sock = accept(serverSocket, (struct sockaddr *)&serverAddr, &len);
 
 		if (sock >= 0) {
+			// without this a client that goes away mid-stream blocks us for good
+			struct timeval sndtimeo = { .tv_sec = 2, .tv_usec = 0 };
+			setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &sndtimeo, sizeof(sndtimeo));
+
 			partnerSocket = sock;
+			bClientStalled = false;
 			ESP_LOGI(TAG, "We have a new client connection %d", sock);
 			handle_telnet_conn();
 			ESP_LOGI(TAG, "Telnet connection terminated %d", sock);
@@ -189,9 +196,22 @@ static void handle_telnet_events(telnet_t *thisTelnet, telnet_event_t *event, vo
 	struct telnetUserData *telnetUserData = (struct telnetUserData *)userData;
 
 	switch(event->type) {
-	case TELNET_EV_SEND:
-		send(telnetUserData->sockfd, event->data.buffer, event->data.size, 0);
+	case TELNET_EV_SEND: {
+		/*
+		Every write to stdout ends up here, so a client that stopped reading must never
+		be allowed to block us: once its window is full, send() would hold whichever task
+		happened to log, and with it the http server, slimproto and the console - the
+		device answers pings and nothing else. The socket carries a send timeout, so this
+		fails instead of hanging, and we drop the connection rather than keep trying. A
+		stalled client loses the tail of the log, which is the cheaper of the two.
+		*/
+		int sent = send(telnetUserData->sockfd, event->data.buffer, event->data.size, 0);
+		if (sent < 0) {
+			bClientStalled = true;
+			ESP_LOGW(TAG, "telnet client stopped reading (%d), dropping it", errno);
+		}
 		break;
+	}
 	case TELNET_EV_DATA:
 		console_push(event->data.buffer, event->data.size);
 		break;
@@ -209,7 +229,7 @@ static size_t process_logs(UBaseType_t bytes, bool make_room){
 	vRingbufferGetInfo(buf_handle, NULL, NULL, NULL, NULL, &pending);
 
 	// nothing to do or we can do 
-	if (!partnerSocket || (make_room && log_buf_size - pending > bytes)) return pending;
+	if (!partnerSocket || bClientStalled || (make_room && log_buf_size - pending > bytes)) return pending;
 
 	// can't send more than what we have
 	if (bytes > pending) bytes = pending;
@@ -218,7 +238,13 @@ static size_t process_logs(UBaseType_t bytes, bool make_room){
 		size_t size;
 		char *item = (char *)xRingbufferReceiveUpTo(buf_handle, &size, pdMS_TO_TICKS(50), bytes);
 		
-		if (!item || !partnerSocket) break;
+		if (!item) break;
+
+		// one timed-out send is enough to know, and the item has to go back either way
+		if (!partnerSocket || bClientStalled) {
+			vRingbufferReturnItem(buf_handle, (void *)item);
+			break;
+		}
 
 		bytes -= size;
 		telnet_send_text(tnHandle, item, size);
@@ -261,7 +287,7 @@ static void handle_telnet_conn() {
 		if (pending) FD_SET(partnerSocket, &wfds);
 
 		int res = select(partnerSocket + 1, &rfds, &wfds, NULL, &timeout);
-		if (res < 0) break;
+		if (res < 0 || bClientStalled) break;
 
 		if (FD_ISSET(partnerSocket, &rfds)) { 
 			int len = recv(partnerSocket, pTelnetUserData->rxbuf, TELNET_RX_BUF, 0);
