@@ -16,6 +16,7 @@
 #include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "esp_gap_bt_api.h"
+#include "esp_wifi.h"
 #include "bt_app_core.h"
 #include "tools.h"
 
@@ -82,6 +83,18 @@ static void bt_app_task_handler(void *arg)
 	s_bt_app_task_queue = xQueueCreate(10, sizeof(bt_app_msg_t));
 	
 	esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+
+	/*
+	One radio, two users: the coexistence layer refuses to arbitrate between them unless
+	wifi sleeps between beacons, and says so - "Should enable WiFi modem sleep when both
+	WiFi and Bluetooth are enabled" - after which i2s aborts in a loop and the device
+	never finishes starting. So bluetooth coming up decides this, whatever the station
+	setup asked for; it is the harder constraint of the two.
+	*/
+	if (esp_wifi_set_ps(WIFI_PS_MIN_MODEM) == ESP_OK) {
+		ESP_LOGI(TAG, "wifi modem sleep enabled, bluetooth and wifi share one radio");
+	}
+
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
 	if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE ) {
         if ((err = esp_bt_controller_init(&bt_cfg)) != ESP_OK) {
