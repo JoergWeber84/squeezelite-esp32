@@ -32,6 +32,12 @@ enum {
     APP_AV_STATE_DISCONNECTING,
 };
 
+/*
+Bring the stack up without inquiry scanning, so the player can keep bluetooth available
+while its audio still goes to the dac - see bt_headphone.h.
+*/
+void bt_app_source_set_auto_discover(bool enabled);
+
 /* sub states of APP_AV_STATE_CONNECTED */
 enum {
     APP_AV_MEDIA_STATE_IDLE,

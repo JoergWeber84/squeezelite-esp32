@@ -105,6 +105,61 @@ static struct {
 	char * sink_name;
 } squeezelite_conf;	
 
+/*
+Inquiry is expensive company: it monopolises a radio that wifi also needs, and a headset
+that is merely switched on does not answer it anyway - having been paired once, it goes
+looking for its own last source instead. So a caller that only wants to be found can turn
+the scanning off and simply stay connectable.
+*/
+static bool s_auto_discover = true;
+
+void bt_app_source_set_auto_discover(bool enabled) {
+	s_auto_discover = enabled;
+}
+
+#define PEER_KEY "a2dp_peer"
+
+/*
+The address of whatever we last talked to, kept across restarts. Without it a restart
+leaves us with nothing to call, and calling is the only thing that reaches a headset that
+was merely switched on - it does not answer inquiry once it has been paired.
+*/
+static void peer_store(const esp_bd_addr_t bda) {
+	char hex[ESP_BD_ADDR_LEN * 2 + 1];
+
+	for (int i = 0; i < ESP_BD_ADDR_LEN; i++) {
+		static const char digits[] = "0123456789abcdef";
+		hex[i * 2] = digits[bda[i] >> 4];
+		hex[i * 2 + 1] = digits[bda[i] & 0x0f];
+	}
+	hex[sizeof(hex) - 1] = '\0';
+
+	char *known = config_alloc_get_default(NVS_TYPE_STR, PEER_KEY, "", 0);
+	bool same = known && !strcasecmp(known, hex);
+	if (known) free(known);
+
+	// nvs has a finite number of writes in it, and this happens on every connection
+	if (!same) {
+		config_set_value(NVS_TYPE_STR, PEER_KEY, hex);
+		ESP_LOGI(TAG, "remembering peer %s", hex);
+	}
+}
+
+static bool peer_load(esp_bd_addr_t bda) {
+	char *hex = config_alloc_get_default(NVS_TYPE_STR, PEER_KEY, "", 0);
+	bool ok = hex && strlen(hex) == ESP_BD_ADDR_LEN * 2;
+
+	for (int i = 0; ok && i < ESP_BD_ADDR_LEN; i++) {
+		char byte[3] = { hex[i * 2], hex[i * 2 + 1], '\0' };
+		char *end = NULL;
+		bda[i] = (uint8_t) strtoul(byte, &end, 16);
+		if (end != byte + 2) ok = false;
+	}
+
+	if (hex) free(hex);
+	return ok;
+}
+
 static cJSON * peers_list_get_entry(const char * s_peer_bdname){
     cJSON * element=NULL;
     cJSON_ArrayForEach(element,peers_list){
@@ -208,6 +263,7 @@ void set_app_source_state(int new_state){
     if(bt_app_source_a2d_state!=new_state){
         ESP_LOGD(TAG, "Updating state from %s to %s", APP_AV_STATE_DESC[bt_app_source_a2d_state], APP_AV_STATE_DESC[new_state]);
         bt_app_source_a2d_state=new_state;
+        if (new_state == APP_AV_STATE_CONNECTED) peer_store(s_peer_bda);
     }
 }
 
@@ -347,7 +403,7 @@ static void bt_app_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *pa
 				set_app_source_state(APP_AV_STATE_CONNECTING);
 				ESP_LOGI(TAG,"Discovery completed.  Ready to start connecting to %s. ", s_peer_bdname);
                 esp_a2d_source_connect(s_peer_bda);
-            } else {
+            } else if (s_auto_discover) {
                 // not discovered, continue to discover
                 ESP_LOGI(TAG, "Device discovery failed, continue to discover...");
                 esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
@@ -739,10 +795,25 @@ static void bt_av_hdl_stack_evt(uint16_t event, void *p_param)
         /* set discoverable and connectable mode */
         esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
 
-        /* start device discovery */
-        ESP_LOGI(TAG,"Starting device discovery...");
-        set_app_source_state(APP_AV_STATE_DISCOVERING);
-        esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
+        /*
+        Calling a known address beats looking for it: a paired headset that has just been
+        switched on ignores inquiry, and inquiry is the most disruptive thing we can do to
+        the wifi sharing this radio. Discovery is for the first pairing only.
+        */
+        if (peer_load(s_peer_bda)) {
+            uint8_t *b = s_peer_bda;
+            ESP_LOGI(TAG,"Known peer %02x:%02x:%02x:%02x:%02x:%02x, calling it rather than searching",
+                     b[0], b[1], b[2], b[3], b[4], b[5]);
+            set_app_source_state(APP_AV_STATE_UNCONNECTED);
+        } else if (s_auto_discover) {
+            /* start device discovery */
+            ESP_LOGI(TAG,"Starting device discovery...");
+            set_app_source_state(APP_AV_STATE_DISCOVERING);
+            esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
+        } else {
+            ESP_LOGI(TAG,"Staying connectable without discovering, waiting to be found.");
+            set_app_source_state(APP_AV_STATE_UNCONNECTED);
+        }
 
         /* create and start heart beat timer */
         int tmr_id = 0;
@@ -884,6 +955,24 @@ static void bt_app_av_state_unconnected(uint16_t event, void *param)
 			break;
 		}
         uint8_t *p = s_peer_bda;
+
+        // nothing to reconnect to yet, and without discovery nothing will turn up either:
+        // stay quiet and let the headset come to us
+        bool peer_known = false;
+        for (int i = 0; i < ESP_BD_ADDR_LEN; i++) if (p[i]) peer_known = true;
+        if (!peer_known && !s_auto_discover) break;
+
+        /*
+        The heartbeat runs every second here, which is a reasonable pace while a headset
+        is expected but not while it sits switched off in a drawer - and this state is
+        now where the player waits whenever its audio goes to the dac. Most headsets call
+        us anyway when they are switched on, so trying every ten seconds loses nothing and
+        leaves the radio to wifi in between.
+        */
+        static int s_retry_intv = 0;
+        if (++s_retry_intv < 10) break;
+        s_retry_intv = 0;
+
         ESP_LOGI(TAG, "a2dp connecting to %s, BT peer: %02x:%02x:%02x:%02x:%02x:%02x",s_peer_bdname,p[0], p[1], p[2], p[3], p[4], p[5]);
         if(esp_a2d_source_connect(s_peer_bda)==ESP_OK) {  
             set_app_source_state(APP_AV_STATE_CONNECTING);
@@ -891,9 +980,11 @@ static void bt_app_av_state_unconnected(uint16_t event, void *param)
 		}
 		else {
             set_app_source_state(APP_AV_STATE_UNCONNECTED);
-			// there was an issue connecting... continue to discover
-			ESP_LOGE(TAG,"Attempt at connecting failed, restart at discover...");
-			esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
+			if (s_auto_discover) {
+				// there was an issue connecting... continue to discover
+				ESP_LOGE(TAG,"Attempt at connecting failed, restart at discover...");
+				esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
+			}
         }
         break;
     }

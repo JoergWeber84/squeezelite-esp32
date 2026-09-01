@@ -97,6 +97,7 @@ const DefaultStringVal defaultStringVals[] = {
     {"mqtt_config", CONFIG_MQTT_CONFIG},
     {"mqtt_interval", ""},
     {"rfid_config", CONFIG_RFID_CONFIG},
+    {"bt_headphone", ""},
     {"set_GPIO", CONFIG_SET_GPIO},
     {"sleep_config", ""},
     {"led_brightness", ""},
