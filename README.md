@@ -572,6 +572,26 @@ When discovery is enabled, the player announces its reader as a Home Assistant *
 
 Scans are also published as plain JSON on `<base topic>/<rfid topic>` (by default `squeezelite/<host_name>/rfid`), for example `{"uid":"04A1B2C3","sak":8,"len":4}`, so they can be consumed by anything else that speaks MQTT. These messages are deliberately not retained: a tag scan is an event, and a retained one would fire again on every restart.
 
+### Bluetooth headset
+Set the NVS parameter `bt_headphone` to the name of a headset, and the player sends its audio there whenever that headset is connected, and to the DAC whenever it is not.
+
+The output backend is chosen once, from the `-o` argument, when squeezelite starts, and squeezelite cannot be started a second time - so following a headset means rewriting that argument and restarting into it. That is one restart per transition, roughly two per listening session, and **playback does not resume by itself afterwards**: the restart interrupts the stream, and LMS has to be told to play again.
+
+Pairing happens once. Put the headset in pairing mode and start the player with `-o BT`, or, if the address is already known from another machine, write it straight to `a2dp_peer` as twelve hex digits and skip the search entirely:
+
+```
+nvs_set a2dp_peer str -v 1c1adfa95479
+```
+
+After that the address is kept across restarts and the player *calls* the headset rather than looking for it. That matters: a headset that has been paired once does not answer an inquiry when merely switched on, it goes looking for its own last source instead - so searching would not find it, while monopolising a radio that wifi also needs.
+
+Two things worth knowing before turning this on:
+
+- **It costs wifi latency.** Bluetooth and wifi share one radio, and their coexistence only works with wifi modem sleep enabled, which the bluetooth controller therefore switches on as it starts. Measured here: about 7 ms round trip without bluetooth, around 100 ms with it. A player with no `bt_headphone` set keeps the faster setting, so the trade is only paid by whoever asks for it.
+- **Bluetooth is 44.1 kHz SBC**, where the DAC is not. For a lossy source this is no loss at all; for a lossless library it is.
+
+If the headset does not turn up within a minute of a restart into bluetooth mode - switched off in the meantime, or out of range - the player falls back to the DAC rather than staying silent.
+
 ### Ethernet 
 Wired ethernet is supported by esp32 with various options but squeezeESP32 is only supporting a Microchip LAN8720 with a RMII interface like [this](https://www.aliexpress.com/item/32858432526.html) or SPI-ethernet bridges like Davicom DM9051 [that](https://www.amazon.com/dp/B08JLFWX9Z) or W5500 like [this](https://www.aliexpress.com/item/32312441357.html).
 
