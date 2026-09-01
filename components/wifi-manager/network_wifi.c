@@ -488,6 +488,17 @@ esp_err_t network_wifi_set_sta_mode() {
         err = esp_wifi_start();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Error starting wifi: %s", esp_err_to_name(err));
+        } else {
+            /*
+            DEFAULT_STA_POWER_SAVE is applied in the soft access point setup and nowhere
+            else, despite the STA in its name, so as a station the device quietly ran on
+            the idf default instead - visible in the log as "wifi:pm start, type: 1" no
+            matter what the constant said. Apply it where it was always meant to go.
+            */
+            esp_err_t ps_err = esp_wifi_set_ps(DEFAULT_STA_POWER_SAVE);
+            if (ps_err != ESP_OK) {
+                ESP_LOGW(TAG, "Could not set station power save mode: %s", esp_err_to_name(ps_err));
+            }
         }
     }
     return err;

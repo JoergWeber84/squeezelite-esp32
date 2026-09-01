@@ -233,7 +233,17 @@ bool network_is_interface_connected(esp_netif_t * interface);
  *  Value: WIFI_PS_MODEM for power save (wifi modem sleep periodically)
  *  Note: Power save is only effective when in STA only mode
  */
-#define DEFAULT_STA_POWER_SAVE 				WIFI_PS_MIN_MODEM
+/*
+Modem sleep parks the radio between beacons, which costs a beacon interval of latency on
+anything arriving unannounced and loses the odd packet outright - measured here as 32 ms
+average and 3 percent loss on an otherwise excellent link. Streaming survives that, the
+buffer is large enough; what suffers is everything that has to answer promptly, and a
+bluetooth output sharing the same radio would suffer more.
+
+The price is current: the receiver now stays awake, which shortens battery runtime. Worth
+revisiting if this ends up running off the battery for long stretches.
+*/
+#define DEFAULT_STA_POWER_SAVE 				WIFI_PS_NONE
 
 
 void network_reboot_ota(char * url);
