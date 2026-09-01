@@ -1,6 +1,12 @@
 #ifdef NETWORK_WIFI_LOG_LEVEL
 #define LOG_LOCAL_LEVEL NETWORK_WIFI_LOG_LEVEL
 #endif
+// sdkconfig.h first: without it CONFIG_BT_ENABLED is not yet defined here, the
+// guard below is silently false, and the header never arrives
+#include "sdkconfig.h"
+#if CONFIG_BT_ENABLED
+#include "bt_app_core.h"
+#endif
 #include "network_wifi.h"
 #include <string.h>
 #include "cJSON.h"
@@ -494,8 +500,22 @@ esp_err_t network_wifi_set_sta_mode() {
             else, despite the STA in its name, so as a station the device quietly ran on
             the idf default instead - visible in the log as "wifi:pm start, type: 1" no
             matter what the constant said. Apply it where it was always meant to go.
+
+            Unless bluetooth got here first. The two share one radio, and the coexistence
+            layer will not arbitrate between them unless wifi sleeps between beacons - it
+            complains once and then i2s aborts forever. Which of the two starts first
+            depends on the chosen output, so both ends have to defer to the same rule.
             */
-            esp_err_t ps_err = esp_wifi_set_ps(DEFAULT_STA_POWER_SAVE);
+            wifi_ps_type_t ps_mode = DEFAULT_STA_POWER_SAVE;
+
+#if CONFIG_BT_ENABLED
+            if (bt_coexist_required()) {
+                ESP_LOGI(TAG, "bluetooth is in use, leaving wifi modem sleep on");
+                ps_mode = WIFI_PS_MIN_MODEM;
+            }
+#endif
+
+            esp_err_t ps_err = esp_wifi_set_ps(ps_mode);
             if (ps_err != ESP_OK) {
                 ESP_LOGW(TAG, "Could not set station power save mode: %s", esp_err_to_name(ps_err));
             }

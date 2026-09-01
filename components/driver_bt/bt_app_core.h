@@ -38,6 +38,9 @@ while its audio still goes to the dac - see bt_headphone.h.
 */
 void bt_app_source_set_auto_discover(bool enabled);
 
+// true once something has asked for bluetooth, whether or not the controller is up yet
+bool bt_coexist_required(void);
+
 /* sub states of APP_AV_STATE_CONNECTED */
 enum {
     APP_AV_MEDIA_STATE_IDLE,

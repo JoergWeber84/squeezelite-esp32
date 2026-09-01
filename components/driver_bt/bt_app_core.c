@@ -75,6 +75,13 @@ static void bt_app_work_dispatched(bt_app_msg_t *msg)
     }
 }
 
+// set the moment bluetooth is wanted, long before the controller reports being up
+static bool s_bt_wanted = false;
+
+bool bt_coexist_required(void) {
+	return s_bt_wanted;
+}
+
 static void bt_app_task_handler(void *arg)
 {
     bt_app_msg_t msg;
@@ -90,6 +97,10 @@ static void bt_app_task_handler(void *arg)
 	WiFi and Bluetooth are enabled" - after which i2s aborts in a loop and the device
 	never finishes starting. So bluetooth coming up decides this, whatever the station
 	setup asked for; it is the harder constraint of the two.
+
+	Announced rather than inferred from the controller's status: the station setup may
+	well ask before the controller is up, and asking a controller that has not started
+	yet gets the wrong answer at exactly the wrong moment.
 	*/
 	if (esp_wifi_set_ps(WIFI_PS_MIN_MODEM) == ESP_OK) {
 		ESP_LOGI(TAG, "wifi modem sleep enabled, bluetooth and wifi share one radio");
@@ -185,6 +196,10 @@ exit:
 
 void bt_app_task_start_up(bt_av_hdl_stack_evt_t* handler)
 {
+    // before the task exists, not inside it: whoever asks about coexistence may well ask
+    // during the window where the task has been created but has not yet run
+    s_bt_wanted = true;
+
     xTaskCreate(bt_app_task_handler, "BtAppT", 4096, handler, configMAX_PRIORITIES - 3, NULL);
 }
 

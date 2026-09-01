@@ -2,7 +2,7 @@ set( WEBPACK_DIR webapp/webpack/dist )
 
 # for the forgetful, REQUIRES cannot use CONFIG_XXX due to parsing order
 if(IDF_TARGET STREQUAL "esp32")
-    set(target_requires "driver_bt")
+    set(target_requires "driver_bt" "bt")
 endif()
 
 idf_component_register( SRC_DIRS . webapp UML-State-Machine-in-C/src

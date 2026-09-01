@@ -44,6 +44,7 @@ static EXT_RAM_ATTR struct {
 	char name[64];
 	bool bt_mode;			// what the running squeezelite was started with
 	bool connected;			// what the headset is doing now
+	bool seen;				// whether it has been here at all since we started
 	int64_t wanted_since;	// when connected last disagreed with bt_mode, 0 when it agrees
 	int64_t started;
 } headphone;
@@ -150,17 +151,23 @@ static void headphone_task(void *arg) {
 			headphone.connected = connected;
 			ESP_LOGI(TAG, "headset %s", connected ? "connected" : "disconnected");
 		}
+		if (connected) headphone.seen = true;
 
 		int64_t now = esp_timer_get_time() / 1000;
 		if (now - headphone.started < GRACE_MS) continue;
 
 		/*
-		Started on bluetooth and the headset never came back - it was switched off while
-		we rebooted, or walked away. Fall back to the dac rather than stay silent.
+		Started on bluetooth and the headset has not turned up yet - it was switched off
+		while we rebooted, or is still finding its way back. Give it the whole rejoin
+		window before falling back to the dac, and in particular do not let the settling
+		rule below cut that short: a headset absent since boot is not the same thing as
+		one that has just walked away.
 		*/
-		if (headphone.bt_mode && !headphone.connected && now - headphone.started > REJOIN_MS) {
-			ESP_LOGW(TAG, "no headset after %d s on bluetooth", REJOIN_MS / 1000);
-			switch_output(false);
+		if (headphone.bt_mode && !headphone.seen) {
+			if (now - headphone.started > REJOIN_MS) {
+				ESP_LOGW(TAG, "no headset within %d s, falling back to the dac", REJOIN_MS / 1000);
+				switch_output(false);
+			}
 			continue;
 		}
 
