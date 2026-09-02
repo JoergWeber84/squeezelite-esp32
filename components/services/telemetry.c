@@ -51,6 +51,7 @@ static EXT_RAM_ATTR struct {
 	int interval_s;
 	bool has_battery;
 	int switch_gpio;		// -1 when no switch is configured
+	bool switch_invert;
 	bool switch_on;
 	int channel;			// last published audio channel, -1 when not applicable
 	char last_tag[32];		// last published tags, for spotting a change
@@ -307,7 +308,7 @@ static void telemetry_task(void *arg) {
 		completely alone. A quarter second is well below what anyone notices.
 		*/
 		if (telemetry.switch_gpio >= 0) {
-			bool on = button_is_pressed(telemetry.switch_gpio, NULL);
+			bool on = button_is_pressed(telemetry.switch_gpio, NULL) != telemetry.switch_invert;
 
 			if (on != telemetry.switch_on) {
 				telemetry.switch_on = on;
@@ -362,16 +363,28 @@ void telemetry_svc_init(void) {
 	// a battery that is not wired up reads zero, and announcing it would be a lie
 	telemetry.has_battery = battery_value_svc() > 0.1;
 
-	// which gpio carries the play switch, empty for none. Not derived from the button
-	// configuration: that is json, and one number is not worth parsing it for
+	/*
+	Which gpio carries the play switch, empty for none. Not derived from the button
+	configuration: that is json, and one number is not worth parsing it for.
+
+	A leading "!" inverts it. Which way round the switch reads depends on how it is
+	wired, and that is not something to bake in: what the button code calls pressed is
+	whichever level was configured as active, which need not be the position the person
+	looking at the entity would call on.
+	*/
 	telemetry.switch_gpio = -1;
 	char *gpio = config_alloc_get_default(NVS_TYPE_STR, "mqtt_switch", "", 0);
 	if (gpio) {
-		if (*gpio) telemetry.switch_gpio = atoi(gpio);
+		const char *num = gpio;
+		if (*num == '!') {
+			telemetry.switch_invert = true;
+			num++;
+		}
+		if (*num) telemetry.switch_gpio = atoi(num);
 		free(gpio);
 	}
 	if (telemetry.switch_gpio >= 0) {
-		telemetry.switch_on = button_is_pressed(telemetry.switch_gpio, NULL);
+		telemetry.switch_on = button_is_pressed(telemetry.switch_gpio, NULL) != telemetry.switch_invert;
 	}
 
 	// seeded so the first tick does not report a change that nobody made
@@ -393,9 +406,9 @@ void telemetry_svc_init(void) {
 					  ESP_TASK_PRIO_MIN + 1, task_stack, &task_buffer);
 
 	if (telemetry.switch_gpio >= 0) {
-		ESP_LOGI(TAG, "telemetry every %d s, battery %s, play switch on gpio %d",
+		ESP_LOGI(TAG, "telemetry every %d s, battery %s, play switch on gpio %d%s",
 				 telemetry.interval_s, telemetry.has_battery ? "included" : "not configured",
-				 telemetry.switch_gpio);
+				 telemetry.switch_gpio, telemetry.switch_invert ? " inverted" : "");
 	} else {
 		ESP_LOGI(TAG, "telemetry every %d s, battery %s, no play switch",
 				 telemetry.interval_s, telemetry.has_battery ? "included" : "not configured");
