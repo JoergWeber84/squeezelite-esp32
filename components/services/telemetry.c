@@ -26,7 +26,9 @@
 #include "network_ethernet.h"
 #include "network_manager.h"
 #include "network_wifi.h"
+#include "bt_headphone.h"
 #include "buttons.h"
+#include "rfid.h"
 #include "telemetry.h"
 
 static const char *TAG = "telemetry";
@@ -50,6 +52,9 @@ static EXT_RAM_ATTR struct {
 	bool has_battery;
 	int switch_gpio;		// -1 when no switch is configured
 	bool switch_on;
+	int channel;			// last published audio channel, -1 when not applicable
+	char last_tag[32];		// last published tags, for spotting a change
+	char prev_tag[32];
 } telemetry;
 
 /*
@@ -192,6 +197,19 @@ static void publish_discovery(void) {
 
 	if (telemetry.switch_gpio >= 0) announce_switch();
 
+	// not "channel": that key is the wifi channel, and has been since the first version
+	if (bt_headphone_channel() >= 0) announce("output", "Audio output", NULL, NULL, false);
+
+	/*
+	The scan stays an event - retained, it would replay as a fresh scan every time Home
+	Assistant restarts. These two are the state that the event cannot answer: what is on
+	the reader now, and what was on it before.
+	*/
+	if (rfid_last_uid()) {
+		announce("tag", "Last tag", NULL, NULL, false);
+		announce("tag_prev", "Previous tag", NULL, NULL, false);
+	}
+
 	ESP_LOGI(TAG, "announced %d sensors to Home Assistant",
 			 (int) (sizeof(fields) / sizeof(*fields) +
 					(telemetry.has_battery ? sizeof(battery_fields) / sizeof(*battery_fields) : 0)));
@@ -205,6 +223,7 @@ static void publish_discovery(void) {
  */
 static void publish_state(void) {
 	char payload[PAYLOAD_LEN], bssid[18] = "", battery[64] = "", sw[24] = "";
+	char chan[24] = "", tags[96] = "";
 	char ip[24] = "";
 	wifi_ap_record_t ap;
 	int rssi = 0, channel = 0;
@@ -241,15 +260,25 @@ static void publish_state(void) {
 		mqtt_svc_format(sw, sizeof(sw), ",\"switch\":\"%s\"", telemetry.switch_on ? "on" : "off");
 	}
 
+	int out = bt_headphone_channel();
+	if (out >= 0) {
+		mqtt_svc_format(chan, sizeof(chan), ",\"output\":\"%s\"", out ? "bluetooth" : "dac");
+	}
+
+	const char *tag = rfid_last_uid(), *prev = rfid_previous_uid();
+	if (tag && prev) {
+		mqtt_svc_format(tags, sizeof(tags), ",\"tag\":\"%s\",\"tag_prev\":\"%s\"", tag, prev);
+	}
+
 	mqtt_svc_format(payload, sizeof(payload),
 					"{\"rssi\":%d,\"bssid\":\"%s\",\"channel\":%d,\"ip\":\"%s\","
 					"\"uptime\":%lld,\"reset\":\"%s\",\"heap\":%u,\"psram\":%u,"
-					"\"version\":\"%s\"%s%s}",
+					"\"version\":\"%s\"%s%s%s%s}",
 					rssi, bssid, channel, ip,
 					esp_timer_get_time() / 1000000, reset_reason(),
 					(unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
 					(unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-					esp_ota_get_app_description()->version, battery, sw);
+					esp_ota_get_app_description()->version, battery, sw, chan, tags);
 
 	// retained, so a restarting Home Assistant sees the last values straight away
 	mqtt_svc_publish(STATE_TOPIC, payload, 0, true);
@@ -285,6 +314,25 @@ static void telemetry_task(void *arg) {
 				changed = true;
 				ESP_LOGI(TAG, "play switch %s", on ? "on" : "off");
 			}
+		}
+
+		int out = bt_headphone_channel();
+		if (out != telemetry.channel) {
+			telemetry.channel = out;
+			changed = true;
+			ESP_LOGI(TAG, "audio output is now %s", out ? "bluetooth" : "the dac");
+		}
+
+		const char *tag = rfid_last_uid();
+		if (tag && strcmp(tag, telemetry.last_tag)) {
+			strncpy(telemetry.last_tag, tag, sizeof(telemetry.last_tag) - 1);
+			changed = true;
+		}
+
+		const char *prev = rfid_previous_uid();
+		if (prev && strcmp(prev, telemetry.prev_tag)) {
+			strncpy(telemetry.prev_tag, prev, sizeof(telemetry.prev_tag) - 1);
+			changed = true;
 		}
 
 		if (due) elapsed = 0;
@@ -325,6 +373,9 @@ void telemetry_svc_init(void) {
 	if (telemetry.switch_gpio >= 0) {
 		telemetry.switch_on = button_is_pressed(telemetry.switch_gpio, NULL);
 	}
+
+	// seeded so the first tick does not report a change that nobody made
+	telemetry.channel = bt_headphone_channel();
 
 	char *name = config_alloc_get_str("host_name", NULL, "squeezelite");
 	strncpy(telemetry.device_id, name ? name : "squeezelite", sizeof(telemetry.device_id) - 1);

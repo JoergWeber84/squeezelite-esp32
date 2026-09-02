@@ -37,8 +37,10 @@ static EXT_RAM_ATTR struct {
 	char topic[TOPIC_LEN];
 	char device_id[64];
 	char last_uid[UID_STR_LEN];
+	char prev_uid[UID_STR_LEN];
 	uint32_t last_seen;
 	bool broker_seen;
+	bool active;
 	int poll_ms, hold_ms;
 } rfid_context;
 
@@ -105,6 +107,13 @@ static void report_tag(const rc522_uid_t *uid) {
 		return;
 	}
 
+	/*
+	Only a different tag moves the previous one along. The same tag laid down again after
+	the hold delay is a fresh scan, but it is not a fresh tag - counting it would leave
+	both entries showing the same thing.
+	*/
+	if (!same) strcpy(rfid_context.prev_uid, rfid_context.last_uid);
+
 	strcpy(rfid_context.last_uid, uid_str);
 	rfid_context.last_seen = now;
 
@@ -117,6 +126,18 @@ static void report_tag(const rc522_uid_t *uid) {
 	if (!mqtt_svc_publish(rfid_context.topic, payload, 0, false)) {
 		ESP_LOGW(TAG, "tag %s not published yet, broker not connected", uid_str);
 	}
+}
+
+/****************************************************************************************
+ * The last two tags, for anyone wanting them as a state rather than as the event the
+ * scan itself is. Empty until that many tags have been seen.
+ */
+const char *rfid_last_uid(void) {
+	return rfid_context.active ? rfid_context.last_uid : NULL;
+}
+
+const char *rfid_previous_uid(void) {
+	return rfid_context.active ? rfid_context.prev_uid : NULL;
 }
 
 /****************************************************************************************
@@ -203,6 +224,8 @@ void rfid_svc_init(void) {
 
 	xTaskCreateStatic(rfid_task, "rfid", RFID_STACK_SIZE, NULL, ESP_TASK_PRIO_MIN + 1,
 					  task_stack, &task_buffer);
+
+	rfid_context.active = true;
 
 	ESP_LOGI(TAG, "RC522 on cs %d rst %d, publishing tags on %s", cs, rst, rfid_context.topic);
 }

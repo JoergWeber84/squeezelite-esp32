@@ -49,6 +49,9 @@ static EXT_RAM_ATTR struct {
 	bool bt_mode;			// what the running squeezelite was started with
 	bool connected;			// what the headset is doing now
 	bool seen;				// whether it has been here at all since we started
+	bool active;			// whether any of this is switched on
+	bool channel_bt;		// the settled view of the above, for display
+	int64_t dropped_since;	// when the headset last went quiet, 0 while it is here
 	int  led_normal;		// the colour the status led had before we touched it
 	int64_t wanted_since;	// when connected last disagreed with bt_mode, 0 when it agrees
 	int64_t started;
@@ -139,6 +142,20 @@ static void switch_output(bool to_bt) {
 }
 
 /****************************************************************************************
+ * Where the audio is going, for anyone who wants to display it.
+ *
+ * Deliberately not "which output squeezelite was started with": that flips to the dac
+ * for the seconds it takes to reboot into bluetooth, and a display following it would
+ * flicker on every transition. The headset being there is the honest answer, and the
+ * one exception is exactly that reboot - having started on bluetooth and not yet heard
+ * from the headset means it is on its way back, not gone.
+ */
+int bt_headphone_channel(void) {
+	if (!headphone.active) return -1;
+	return headphone.channel_bt ? 1 : 0;
+}
+
+/****************************************************************************************
  *
  */
 static void headphone_task(void *arg) {
@@ -155,14 +172,39 @@ static void headphone_task(void *arg) {
 		if (connected != headphone.connected) {
 			headphone.connected = connected;
 			ESP_LOGI(TAG, "headset %s", connected ? "connected" : "disconnected");
-
-			// colour says where the audio goes, the blinking that the output code does
-			// says what it is doing - the two do not get in each other's way
-			led_color(LED_GREEN, connected ? COLOUR_HEADSET : headphone.led_normal);
 		}
 		if (connected) headphone.seen = true;
 
 		int64_t now = esp_timer_get_time() / 1000;
+
+		/*
+		A settled view of the same thing, because the raw one is not fit to be displayed:
+		establishing the link drops it briefly once or twice, and reporting each blip
+		would have anything watching flicker between bluetooth and the dac. A second of
+		silence is not a headset that has been switched off, so a drop has to last as
+		long as the one that would cost a restart before it counts. Coming back needs no
+		such patience - a headset that answers is unambiguous.
+		*/
+		bool settled = headphone.channel_bt;
+
+		if (connected || (headphone.bt_mode && !headphone.seen)) {
+			settled = true;
+			headphone.dropped_since = 0;
+		} else if (!headphone.dropped_since) {
+			headphone.dropped_since = now;
+		} else if (now - headphone.dropped_since >= SETTLE_MS) {
+			settled = false;
+		}
+
+		if (settled != headphone.channel_bt) {
+			headphone.channel_bt = settled;
+			ESP_LOGI(TAG, "audio goes to %s", settled ? "the headset" : "the dac");
+
+			// colour says where the audio goes, the blinking that the output code does
+			// says what it is doing - the two do not get in each other's way
+			led_color(LED_GREEN, settled ? COLOUR_HEADSET : headphone.led_normal);
+		}
+
 		if (now - headphone.started < GRACE_MS) continue;
 
 		/*
@@ -226,6 +268,9 @@ void bt_headphone_svc_init(void) {
 	headphone.started = esp_timer_get_time() / 1000;
 	headphone.led_normal = led_get_color(LED_GREEN);
 
+	// on bluetooth we are already there, whether or not the headset has answered yet
+	headphone.channel_bt = headphone.bt_mode;
+
 	/*
 	The name travels through nvs rather than through the option string. hal_bluetooth_init
 	falls back to a2dp_sink_name when it is given no -n, which keeps the "-o" argument a
@@ -249,6 +294,8 @@ void bt_headphone_svc_init(void) {
 		// "BT" stands in for the program name the option parser expects, nothing more
 		hal_bluetooth_init("BT");
 	}
+
+	headphone.active = true;
 
 	static DRAM_ATTR StaticTask_t task_buffer __attribute__ ((aligned (4)));
 	static EXT_RAM_ATTR StackType_t task_stack[HEADPHONE_STACK_SIZE] __attribute__ ((aligned (4)));

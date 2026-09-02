@@ -28,3 +28,11 @@ this off. Pairing itself still happens the usual way, with the headset in pairin
 and the player started with "-o BT".
 */
 void bt_headphone_svc_init(void);
+
+/*
+Where the audio currently goes: 1 for the headset, 0 for the dac, -1 when no headset is
+configured and the question does not arise. Follows the headset rather than the output
+squeezelite was started with, so it does not flicker during the reboot that a change
+costs - see the definition for why.
+*/
+int bt_headphone_channel(void);

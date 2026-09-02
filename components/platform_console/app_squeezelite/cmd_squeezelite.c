@@ -80,16 +80,20 @@ that goes straight for the TCP/IP stack, so starting it any earlier crashes the 
 rather than just failing to connect.
 */
 void app_svc_start(void) {
-	// both register announcements that the client replays on connect, so they go first
-	telemetry_svc_init();
-	mqtt_svc_init();
-
 	/*
 	After the console, because it reads the command line the console just ran and, on the
 	dac, brings the bluetooth stack up itself - which the BT output would otherwise have
 	done. Doing it earlier would race whichever of the two got there first.
+
+	Before the telemetry, which asks it where the audio goes: asking a service that has
+	not started yet gets "nowhere", and the real answer a tick later then looks like a
+	change that nobody made.
 	*/
 	bt_headphone_svc_init();
+
+	// both register announcements that the client replays on connect, so they go first
+	telemetry_svc_init();
+	mqtt_svc_init();
 }
 
 static int touch_report(int argc, char **argv) {
