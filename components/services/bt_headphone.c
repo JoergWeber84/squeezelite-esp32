@@ -19,6 +19,7 @@
 #include "esp_timer.h"
 #include "platform_config.h"
 #include "bt_app_core.h"
+#include "led.h"
 #include "bt_headphone.h"
 
 static const char *TAG = "bt_headphone";
@@ -40,11 +41,15 @@ extern void hal_bluetooth_init(const char *options);
 #define OUTPUT_I2S				"i2s"
 #define OUTPUT_BT				"BT"
 
+// ws2812 values are in the strip's own green-red-blue order, so this really is blue
+#define COLOUR_HEADSET			0x0000ff
+
 static EXT_RAM_ATTR struct {
 	char name[64];
 	bool bt_mode;			// what the running squeezelite was started with
 	bool connected;			// what the headset is doing now
 	bool seen;				// whether it has been here at all since we started
+	int  led_normal;		// the colour the status led had before we touched it
 	int64_t wanted_since;	// when connected last disagreed with bt_mode, 0 when it agrees
 	int64_t started;
 } headphone;
@@ -150,6 +155,10 @@ static void headphone_task(void *arg) {
 		if (connected != headphone.connected) {
 			headphone.connected = connected;
 			ESP_LOGI(TAG, "headset %s", connected ? "connected" : "disconnected");
+
+			// colour says where the audio goes, the blinking that the output code does
+			// says what it is doing - the two do not get in each other's way
+			led_color(LED_GREEN, connected ? COLOUR_HEADSET : headphone.led_normal);
 		}
 		if (connected) headphone.seen = true;
 
@@ -215,6 +224,7 @@ void bt_headphone_svc_init(void) {
 	free(cmd);
 
 	headphone.started = esp_timer_get_time() / 1000;
+	headphone.led_normal = led_get_color(LED_GREEN);
 
 	/*
 	The name travels through nvs rather than through the option string. hal_bluetooth_init

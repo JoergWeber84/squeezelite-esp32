@@ -221,6 +221,36 @@ int led_allocate(void) {
 /****************************************************************************************
  *
  */
+/****************************************************************************************
+ * What colour an led is set to, so a caller that changes it can put it back without
+ * having to assume what it was.
+ */
+int led_get_color(int idx) {
+	if (idx < 0 || idx >= MAX_LED) return 0;
+	return leds[idx].color;
+}
+
+/****************************************************************************************
+ * Change the colour of an addressable led. Not led_config: that one also reinstalls the
+ * rmt driver, which must happen exactly once.
+ */
+bool led_color(int idx, int color) {
+	if (idx < 0 || idx >= MAX_LED) return false;
+
+	// on a plain or pwm led, "color" is the on-state polarity - changing it inverts the
+	// led rather than recolouring it, so there is nothing sensible to do here
+	if (!leds[idx].rmt) return false;
+
+	if (leds[idx].color == (uint32_t) color) return true;
+
+	leds[idx].color = color;
+
+	// the strip only learns about it on the next write, so redo the level we are at
+	set_level(leds + idx, leds[idx].on);
+
+	return true;
+}
+
 bool led_config(int idx, gpio_num_t gpio, int color, int bright, led_type_t type) {
 	if (gpio < 0) {
 		ESP_LOGW(TAG,"LED GPIO -1 ignored");

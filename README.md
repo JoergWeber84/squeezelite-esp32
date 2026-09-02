@@ -567,6 +567,8 @@ Every `mqtt_interval` seconds (60 by default, 0 switches it off) the player publ
 
 The two battery fields are left out entirely when `bat_config` is empty, rather than reporting a constant zero.
 
+Set `mqtt_switch` to a GPIO number to publish the position of a latching switch - typically the one wired to play/pause - as a `switch` field and a Home Assistant *binary sensor*. It is published as soon as it moves rather than at the next interval, so an automation can follow it, and the periodic cadence is unaffected. The level is read from what the button code already keeps up to date, so the path that turns the same switch into play/pause is left alone. A momentary button will work too but is not much use as an entity, being "on" only while held.
+
 #### Home Assistant
 When discovery is enabled, the player announces its reader as a Home Assistant *tag scanner* and every scan raises a `tag_scanned` event that you can use directly as an automation trigger, with the tag UID as the tag id. Every telemetry field is announced as its own sensor at the same time, marked as diagnostic so it stays off the main device card. All of them share one device entry and point at the availability topic, so they go unavailable together when the player drops off rather than freezing at their last value. Nothing needs to be added to `configuration.yaml`, but the MQTT integration must be set up and pointed at the same broker.
 
@@ -591,6 +593,8 @@ Two things worth knowing before turning this on:
 - **Bluetooth is 44.1 kHz SBC**, where the DAC is not. For a lossy source this is no loss at all; for a lossless library it is.
 
 If the headset does not turn up within a minute of a restart into bluetooth mode - switched off in the meantime, or out of range - the player falls back to the DAC rather than staying silent.
+
+On an addressable status LED the colour follows the headset: blue while it is connected, back to its configured colour when it is not. The blinking that the output code does for playing, stopped and idle is untouched, so the two read together - the colour says where the audio goes, the blinking says what it is doing. The LED comes up in its configured colour after each restart and turns blue once the headset is back, so expect a few green seconds at the start of a bluetooth session.
 
 ### Ethernet 
 Wired ethernet is supported by esp32 with various options but squeezeESP32 is only supporting a Microchip LAN8720 with a RMII interface like [this](https://www.aliexpress.com/item/32858432526.html) or SPI-ethernet bridges like Davicom DM9051 [that](https://www.amazon.com/dp/B08JLFWX9Z) or W5500 like [this](https://www.aliexpress.com/item/32312441357.html).

@@ -24,6 +24,11 @@ typedef enum { LED_GPIO = -1, LED_WS2812 } led_type_t;
 // if type is LED_GPIO then color set the GPIO logic value for "on"
 bool led_config(int idx, gpio_num_t gpio, int color, int bright, led_type_t type);
 bool led_brightness(int idx, int percent);
+
+// recolour an addressable led. Values are in the strip's own order, which for a
+// ws2812 is green-red-blue: 0xff0000 is green, 0x00ff00 red, 0x0000ff blue.
+bool led_color(int idx, int color);
+int  led_get_color(int idx);
 bool led_blink_core(int idx, int ontime, int offtime, bool push);
 bool led_unpush(int idx);
 int  led_allocate(void);

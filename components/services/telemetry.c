@@ -26,6 +26,7 @@
 #include "network_ethernet.h"
 #include "network_manager.h"
 #include "network_wifi.h"
+#include "buttons.h"
 #include "telemetry.h"
 
 static const char *TAG = "telemetry";
@@ -36,6 +37,9 @@ static void publish_state(void);
 #define DEFAULT_INTERVAL_S		60
 #define STATE_TOPIC				"state"
 
+// how often the switch is looked at, which is what makes "immediately" mean anything
+#define TICK_MS					250
+
 // one announcement is the largest thing we build, the state object stays well below it
 #define PAYLOAD_LEN				640
 #define TOPIC_LEN				160
@@ -44,6 +48,8 @@ static EXT_RAM_ATTR struct {
 	char device_id[64];
 	int interval_s;
 	bool has_battery;
+	int switch_gpio;		// -1 when no switch is configured
+	bool switch_on;
 } telemetry;
 
 /*
@@ -139,6 +145,33 @@ static void announce(const char *key, const char *name, const char *unit,
 }
 
 /****************************************************************************************
+ * The switch is a state, not a measurement, so it gets a binary sensor rather than the
+ * sensor the others use - which means its own announcement rather than a flag on theirs.
+ */
+static void announce_switch(void) {
+	char topic[TOPIC_LEN], payload[PAYLOAD_LEN];
+	const char *prefix = mqtt_svc_discovery_prefix();
+	const char *base = mqtt_svc_topic_base();
+
+	if (!prefix || !base) return;
+
+	mqtt_svc_format(topic, sizeof(topic), "/%s/binary_sensor/%s_switch/config", prefix,
+					telemetry.device_id);
+
+	mqtt_svc_format(payload, sizeof(payload),
+					"{\"name\":\"Play switch\",\"state_topic\":\"%s/%s\","
+					"\"value_template\":\"{{ value_json.switch }}\","
+					"\"payload_on\":\"on\",\"payload_off\":\"off\","
+					"\"unique_id\":\"%s_switch\",\"availability_topic\":\"%s/availability\","
+					"\"device\":{\"identifiers\":[\"%s\"],\"name\":\"%s\","
+					"\"manufacturer\":\"squeezelite-esp32\",\"model\":\"SqueezeESP32\"}}",
+					base, STATE_TOPIC, telemetry.device_id, base,
+					telemetry.device_id, telemetry.device_id);
+
+	mqtt_svc_publish(topic, payload, 1, true);
+}
+
+/****************************************************************************************
  * Called on every connect: the announcements are retained on the broker, but a broker
  * that lost its session has to be told again.
  */
@@ -157,6 +190,8 @@ static void publish_discovery(void) {
 		}
 	}
 
+	if (telemetry.switch_gpio >= 0) announce_switch();
+
 	ESP_LOGI(TAG, "announced %d sensors to Home Assistant",
 			 (int) (sizeof(fields) / sizeof(*fields) +
 					(telemetry.has_battery ? sizeof(battery_fields) / sizeof(*battery_fields) : 0)));
@@ -169,7 +204,7 @@ static void publish_discovery(void) {
  * One JSON object with everything, so Home Assistant needs a single message for all of it
  */
 static void publish_state(void) {
-	char payload[PAYLOAD_LEN], bssid[18] = "", battery[64] = "";
+	char payload[PAYLOAD_LEN], bssid[18] = "", battery[64] = "", sw[24] = "";
 	char ip[24] = "";
 	wifi_ap_record_t ap;
 	int rssi = 0, channel = 0;
@@ -202,15 +237,19 @@ static void publish_state(void) {
 						battery_value_svc(), battery_level_svc());
 	}
 
+	if (telemetry.switch_gpio >= 0) {
+		mqtt_svc_format(sw, sizeof(sw), ",\"switch\":\"%s\"", telemetry.switch_on ? "on" : "off");
+	}
+
 	mqtt_svc_format(payload, sizeof(payload),
 					"{\"rssi\":%d,\"bssid\":\"%s\",\"channel\":%d,\"ip\":\"%s\","
 					"\"uptime\":%lld,\"reset\":\"%s\",\"heap\":%u,\"psram\":%u,"
-					"\"version\":\"%s\"%s}",
+					"\"version\":\"%s\"%s%s}",
 					rssi, bssid, channel, ip,
 					esp_timer_get_time() / 1000000, reset_reason(),
 					(unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
 					(unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-					esp_ota_get_app_description()->version, battery);
+					esp_ota_get_app_description()->version, battery, sw);
 
 	// retained, so a restarting Home Assistant sees the last values straight away
 	mqtt_svc_publish(STATE_TOPIC, payload, 0, true);
@@ -224,9 +263,34 @@ static void publish_state(void) {
 static void telemetry_task(void *arg) {
 	ESP_LOGI(TAG, "publishing telemetry every %d s", telemetry.interval_s);
 
+	int elapsed = 0;
+
 	while (1) {
-		vTaskDelay(pdMS_TO_TICKS(telemetry.interval_s * 1000));
-		if (mqtt_svc_connected()) publish_state();
+		vTaskDelay(pdMS_TO_TICKS(TICK_MS));
+		elapsed += TICK_MS;
+
+		bool due = elapsed >= telemetry.interval_s * 1000;
+		bool changed = false;
+
+		/*
+		Looked at rather than subscribed to: the button code keeps this level current for
+		us, and reading it here leaves the path that turns the same switch into play/pause
+		completely alone. A quarter second is well below what anyone notices.
+		*/
+		if (telemetry.switch_gpio >= 0) {
+			bool on = button_is_pressed(telemetry.switch_gpio, NULL);
+
+			if (on != telemetry.switch_on) {
+				telemetry.switch_on = on;
+				changed = true;
+				ESP_LOGI(TAG, "play switch %s", on ? "on" : "off");
+			}
+		}
+
+		if (due) elapsed = 0;
+
+		// a change goes out at once, without disturbing the periodic cadence
+		if ((due || changed) && mqtt_svc_connected()) publish_state();
 	}
 }
 
@@ -250,6 +314,18 @@ void telemetry_svc_init(void) {
 	// a battery that is not wired up reads zero, and announcing it would be a lie
 	telemetry.has_battery = battery_value_svc() > 0.1;
 
+	// which gpio carries the play switch, empty for none. Not derived from the button
+	// configuration: that is json, and one number is not worth parsing it for
+	telemetry.switch_gpio = -1;
+	char *gpio = config_alloc_get_default(NVS_TYPE_STR, "mqtt_switch", "", 0);
+	if (gpio) {
+		if (*gpio) telemetry.switch_gpio = atoi(gpio);
+		free(gpio);
+	}
+	if (telemetry.switch_gpio >= 0) {
+		telemetry.switch_on = button_is_pressed(telemetry.switch_gpio, NULL);
+	}
+
 	char *name = config_alloc_get_str("host_name", NULL, "squeezelite");
 	strncpy(telemetry.device_id, name ? name : "squeezelite", sizeof(telemetry.device_id) - 1);
 	if (name) free(name);
@@ -265,6 +341,12 @@ void telemetry_svc_init(void) {
 	xTaskCreateStatic(telemetry_task, "telemetry", TELEMETRY_STACK_SIZE, NULL,
 					  ESP_TASK_PRIO_MIN + 1, task_stack, &task_buffer);
 
-	ESP_LOGI(TAG, "telemetry every %d s, battery %s", telemetry.interval_s,
-			 telemetry.has_battery ? "included" : "not configured");
+	if (telemetry.switch_gpio >= 0) {
+		ESP_LOGI(TAG, "telemetry every %d s, battery %s, play switch on gpio %d",
+				 telemetry.interval_s, telemetry.has_battery ? "included" : "not configured",
+				 telemetry.switch_gpio);
+	} else {
+		ESP_LOGI(TAG, "telemetry every %d s, battery %s, no play switch",
+				 telemetry.interval_s, telemetry.has_battery ? "included" : "not configured");
+	}
 }
