@@ -69,16 +69,17 @@ static const struct {
 	const char *unit;
 	const char *device_class;
 	bool measurement;
+	int precision;			// decimals Home Assistant should show, -1 to let it decide
 } fields[] = {
-	{ "rssi",     "Signal",           "dBm", "signal_strength", true  },
-	{ "bssid",    "Access point",     NULL,  NULL,              false },
-	{ "channel",  "WiFi channel",     NULL,  NULL,              false },
-	{ "ip",       "IP address",       NULL,  NULL,              false },
-	{ "uptime",   "Uptime",           "s",   "duration",        true  },
-	{ "reset",    "Reset reason",     NULL,  NULL,              false },
-	{ "heap",     "Free memory",      "B",   NULL,              true  },
-	{ "psram",    "Free PSRAM",       "B",   NULL,              true  },
-	{ "version",  "Firmware",         NULL,  NULL,              false },
+	{ "rssi",     "Signal",           "dBm", "signal_strength", true,  -1 },
+	{ "bssid",    "Access point",     NULL,  NULL,              false, -1 },
+	{ "channel",  "WiFi channel",     NULL,  NULL,              false, -1 },
+	{ "ip",       "IP address",       NULL,  NULL,              false, -1 },
+	{ "uptime",   "Uptime",           "s",   "duration",        true,  -1 },
+	{ "reset",    "Reset reason",     NULL,  NULL,              false, -1 },
+	{ "heap",     "Free memory",      "B",   NULL,              true,  -1 },
+	{ "psram",    "Free PSRAM",       "B",   NULL,              true,  -1 },
+	{ "version",  "Firmware",         NULL,  NULL,              false, -1 },
 };
 
 // battery is only announced when one is actually wired up, see telemetry_svc_init
@@ -87,9 +88,10 @@ static const struct {
 	const char *name;
 	const char *unit;
 	const char *device_class;
+	int precision;
 } battery_fields[] = {
-	{ "battery",  "Battery voltage",  "V",   "voltage" },
-	{ "level",    "Battery",          "%",   "battery" },
+	{ "battery",  "Battery voltage",  "V",   "voltage", 2 },
+	{ "level",    "Battery",          "%",   "battery", 0 },
 };
 
 /****************************************************************************************
@@ -116,8 +118,9 @@ static const char *reset_reason(void) {
  * or when they change, and a restarting server has to find them again.
  */
 static void announce(const char *key, const char *name, const char *unit,
-					 const char *device_class, bool measurement) {
-	char topic[TOPIC_LEN], payload[PAYLOAD_LEN], extra[128] = "";
+					 const char *device_class, bool measurement, int precision) {
+	// wide enough for every optional member below at once, which is a tight fit at 128
+	char topic[TOPIC_LEN], payload[PAYLOAD_LEN], extra[192] = "";
 	const char *prefix = mqtt_svc_discovery_prefix();
 	const char *base = mqtt_svc_topic_base();
 	size_t used = 0;
@@ -131,7 +134,16 @@ static void announce(const char *key, const char *name, const char *unit,
 		used += snprintf(extra + used, sizeof(extra) - used, ",\"device_class\":\"%s\"", device_class);
 	}
 	if (measurement && used < sizeof(extra)) {
-		snprintf(extra + used, sizeof(extra) - used, ",\"state_class\":\"measurement\"");
+		used += snprintf(extra + used, sizeof(extra) - used, ",\"state_class\":\"measurement\"");
+	}
+
+	/*
+	Without this Home Assistant picks a precision from the device class, and for a voltage
+	that is none - the value arrives with two decimals, the history keeps them, and the
+	dial shows a whole number. Only worth stating where the decimals mean something.
+	*/
+	if (precision >= 0 && used < sizeof(extra)) {
+		snprintf(extra + used, sizeof(extra) - used, ",\"suggested_display_precision\":%d", precision);
 	}
 
 	mqtt_svc_format(topic, sizeof(topic), "/%s/sensor/%s_%s/config", prefix,
@@ -186,20 +198,20 @@ static void publish_discovery(void) {
 
 	for (int i = 0; i < sizeof(fields) / sizeof(*fields); i++) {
 		announce(fields[i].key, fields[i].name, fields[i].unit,
-				 fields[i].device_class, fields[i].measurement);
+				 fields[i].device_class, fields[i].measurement, fields[i].precision);
 	}
 
 	if (telemetry.has_battery) {
 		for (int i = 0; i < sizeof(battery_fields) / sizeof(*battery_fields); i++) {
 			announce(battery_fields[i].key, battery_fields[i].name, battery_fields[i].unit,
-					 battery_fields[i].device_class, true);
+					 battery_fields[i].device_class, true, battery_fields[i].precision);
 		}
 	}
 
 	if (telemetry.switch_gpio >= 0) announce_switch();
 
 	// not "channel": that key is the wifi channel, and has been since the first version
-	if (bt_headphone_channel() >= 0) announce("output", "Audio output", NULL, NULL, false);
+	if (bt_headphone_channel() >= 0) announce("output", "Audio output", NULL, NULL, false, -1);
 
 	/*
 	The scan stays an event - retained, it would replay as a fresh scan every time Home
@@ -207,8 +219,8 @@ static void publish_discovery(void) {
 	the reader now, and what was on it before.
 	*/
 	if (rfid_last_uid()) {
-		announce("tag", "Last tag", NULL, NULL, false);
-		announce("tag_prev", "Previous tag", NULL, NULL, false);
+		announce("tag", "Last tag", NULL, NULL, false, -1);
+		announce("tag_prev", "Previous tag", NULL, NULL, false, -1);
 	}
 
 	ESP_LOGI(TAG, "announced %d sensors to Home Assistant",
