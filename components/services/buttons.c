@@ -49,7 +49,10 @@ static EXT_RAM_ATTR struct button_s {
 	bool long_timer, shifted, shifting;
 	int type, level;	
 	bool touch;
-	int touch_channel, touch_threshold;
+	int touch_channel, touch_delta;
+	int32_t touch_base;			// idle level, scaled by 1 << TOUCH_BASE_SHIFT
+	int touch_min, touch_max;	// of the raw value, since the last probe
+	int touch_adrift;			// polls the value has been beyond the delta
 	TimerHandle_t timer;
 } buttons[MAX_BUTTONS];
 
@@ -63,12 +66,46 @@ static TimerHandle_t polled_timer;
 
 #if CONFIG_IDF_TARGET_ESP32
 /*
-The esp32 touch sensor reads *lower* when a finger loads the pad, so a pad counts as
-touched below its threshold. Which channel sits on which GPIO is fixed by the silicon.
+The esp32 touch sensor reads *lower* when a finger loads the pad. Which channel sits on
+which GPIO is fixed by the silicon.
+
+What counts as touched is a dip below where the pad has been sitting, not a fixed level.
+The idle reading wanders with temperature, humidity and anything that changes the stray
+capacitance - measured here, all four pads drifted four to five percent downwards in a
+few days, which ate half the margin a fixed threshold had been given. Following the idle
+level instead removes the need to ever calibrate it.
+
+The baseline is kept scaled so the update does not starve on truncation, and follows at
+one part in 4096 of a sample. At a 50 ms poll that is a time constant of about three and
+a half minutes, which is what makes this safe without having to stop following while a
+pad is pressed: 200 ms of finger moves the baseline by a thousandth of the dip.
+
+The one assumption is that these are tap buttons. A pad held down does get absorbed
+eventually and then reads as released - with the numbers below, after some four minutes.
+Nothing here should be built into a hold-to-repeat.
 */
 #define TOUCH_POLL			50
 #define TOUCH_FILTER		10
-#define TOUCH_THRESHOLD_PCT	90
+#define TOUCH_BASE_SHIFT	8
+#define TOUCH_RATE_SHIFT	12
+
+// counts below the baseline that count as a finger. Measured noise is under ten and a
+// real touch was sixty-five and up, so there is room between them to be generous
+#define TOUCH_DELTA			20
+
+/*
+How long a pad may sit further than that from its baseline before the baseline is
+declared wrong and restarted from wherever the pad actually is.
+
+This is not a nicety. One pad here seeded eighty counts high - the reading is unsettled
+for the first moments and averaging did not catch it - and a baseline that high means the
+pad reads permanently pressed. It does correct itself, but at the rate above that takes
+some four and a half minutes, and it is stuck pressed for all of them.
+
+Ten seconds is far longer than any tap and far shorter than that, and it costs nothing
+in normal use: the value sits within a few counts of the baseline, not beyond the delta.
+*/
+#define TOUCH_STUCK_MS		10000
 
 static const int touch_gpio[TOUCH_PAD_MAX] = { 4, 0, 2, 15, 13, 12, 14, 27, 33, 32 };
 static TimerHandle_t touch_timer;
@@ -167,11 +204,39 @@ static void touch_polling( TimerHandle_t xTimer ) {
 		if (!buttons[i].touch) continue;
 		if (touch_pad_read_filtered(buttons[i].touch_channel, &value) != ESP_OK) continue;
 
-		// a loaded pad reads below the threshold and that always means 'pressed'
-		level = value < buttons[i].touch_threshold ? buttons[i].type : !buttons[i].type;
+		int32_t base = buttons[i].touch_base >> TOUCH_BASE_SHIFT;
+		int32_t off = base - value;
+
+		// a loaded pad reads below where it has been sitting, and that means 'pressed'
+		level = off > buttons[i].touch_delta ? buttons[i].type : !buttons[i].type;
+
+		/*
+		Sitting beyond the delta for longer than any tap means the baseline is wrong, not
+		that a finger has been there for ten seconds. Believe the pad and start again from
+		where it is - either direction, since a baseline too low leaves the pad deaf just
+		as a baseline too high leaves it stuck pressed.
+		*/
+		if (off > buttons[i].touch_delta || -off > buttons[i].touch_delta) {
+			if (++buttons[i].touch_adrift * TOUCH_POLL >= TOUCH_STUCK_MS) {
+				ESP_LOGW(TAG, "touch pad GPIO %u sat %d off its baseline of %d for %ds, restarting it at %u",
+						 buttons[i].gpio, (int) off, (int) base, TOUCH_STUCK_MS / 1000, value);
+				buttons[i].touch_base = (int32_t) value << TOUCH_BASE_SHIFT;
+				buttons[i].touch_adrift = 0;
+				level = !buttons[i].type;
+			}
+		} else {
+			buttons[i].touch_adrift = 0;
+		}
+
+		// follow the idle level, slowly enough that a tap does not take it along
+		buttons[i].touch_base += (((int32_t) value << TOUCH_BASE_SHIFT) - buttons[i].touch_base) >> TOUCH_RATE_SHIFT;
+
+		if (value < buttons[i].touch_min) buttons[i].touch_min = value;
+		if (value > buttons[i].touch_max) buttons[i].touch_max = value;
 
 		if (level != buttons[i].level) {
-			ESP_LOGD(TAG, "touch pad gpio:%u value:%u level:%u", buttons[i].gpio, value, level);
+			ESP_LOGD(TAG, "touch pad gpio:%u value:%u base:%d level:%u", buttons[i].gpio,
+					 value, (int) base, level);
 			buttons_handler(buttons + i, level);
 		}
 	}
@@ -401,7 +466,7 @@ void button_create(void *client, int gpio, int type, bool pull, int debounce, bu
 /****************************************************************************************
  * Create a button on a capacitive touch pad
  */
-void button_create_touch(void *client, int gpio, int threshold, int debounce, button_handler handler, int long_press, int shifter_gpio) {
+void button_create_touch(void *client, int gpio, int delta, int debounce, button_handler handler, int long_press, int shifter_gpio) {
 #if CONFIG_IDF_TARGET_ESP32
 	struct button_s *button;
 	int channel = -1;
@@ -425,22 +490,51 @@ void button_create_touch(void *client, int gpio, int threshold, int debounce, bu
 	touch_pad_config(channel, 0);
 
 	// give the filter a few rounds before trusting what it reads
-	vTaskDelay(pdMS_TO_TICKS(TOUCH_FILTER * 5));
+	vTaskDelay(pdMS_TO_TICKS(TOUCH_FILTER * 15));
 
-	if (!threshold) {
-		uint16_t idle = 0;
-		touch_pad_read_filtered(channel, &idle);
-		threshold = (idle * TOUCH_THRESHOLD_PCT) / 100;
-		ESP_LOGI(TAG, "touch pad GPIO %u idles at %u, threshold set to %d - use the 'touch' command to check it against a real finger", gpio, idle, threshold);
+	/*
+	Anything above a hundred is an absolute level left over from when the threshold was
+	fixed, and means nothing now that the baseline is followed. Saying so is better than
+	quietly ignoring it, since the old numbers are what someone would have written down.
+	*/
+	if (delta > 100) {
+		ESP_LOGW(TAG, "touch pad GPIO %u: %d is an absolute level from the old fixed threshold, which no longer applies - ignoring it, use \"delta\" for the dip that counts as a touch", gpio, delta);
+		delta = 0;
 	}
+
+	if (!delta) delta = TOUCH_DELTA;
+
+	/*
+	Averaged rather than read once. A single read this early lands anywhere in the
+	filter's settling curve - one pad seeded thirty counts below where it actually idles,
+	and while the baseline does correct itself, it takes minutes to do so, and the pad is
+	insensitive until it has. Boot is exactly when someone reaches for a button.
+	*/
+	uint32_t sum = 0;
+	int reads = 0;
+
+	for (int i = 0; i < 8; i++) {
+		uint16_t sample = 0;
+
+		if (touch_pad_read_filtered(channel, &sample) == ESP_OK && sample) {
+			sum += sample;
+			reads++;
+		}
+		vTaskDelay(pdMS_TO_TICKS(TOUCH_FILTER * 2));
+	}
+
+	uint16_t idle = reads ? sum / reads : 0;
 
 	if ((button = button_register(client, gpio, BUTTON_LOW, debounce, handler, long_press, shifter_gpio)) == NULL) return;
 
-	ESP_LOGI(TAG, "Creating touch button using GPIO %u, threshold %d, long press %u shifter %d", gpio, threshold, long_press, shifter_gpio);
+	ESP_LOGI(TAG, "Creating touch button using GPIO %u, idles at %u, triggers %d below that, long press %u shifter %d", gpio, idle, delta, long_press, shifter_gpio);
 
 	button->touch = true;
 	button->touch_channel = channel;
-	button->touch_threshold = threshold;
+	button->touch_delta = delta;
+	button->touch_base = (int32_t) idle << TOUCH_BASE_SHIFT;
+	button->touch_min = idle;
+	button->touch_max = idle;
 	button->level = !button->type;
 
 	if (!touch_timer) {
@@ -453,7 +547,41 @@ void button_create_touch(void *client, int gpio, int threshold, int debounce, bu
 }	
 
 /****************************************************************************************
- * Report what the touch pads read, for setting a threshold by hand
+ * A snapshot of every touch pad, for publishing somewhere it can be watched hands-free.
+ * The min and max span the time since the previous call and are reset by it, which is
+ * what makes both the noise band and a dip too short to see otherwise visible.
+ */
+int button_touch_probe(struct button_touch_s *out, int max) {
+	int n = 0;
+
+#if CONFIG_IDF_TARGET_ESP32
+	for (int i = 0; i < n_buttons && n < max; i++) {
+		uint16_t value = 0;
+
+		if (!buttons[i].touch) continue;
+		if (touch_pad_read_filtered(buttons[i].touch_channel, &value) != ESP_OK) continue;
+
+		int32_t base = buttons[i].touch_base >> TOUCH_BASE_SHIFT;
+
+		out[n].gpio = buttons[i].gpio;
+		out[n].value = value;
+		out[n].baseline = base;
+		out[n].delta = buttons[i].touch_delta;
+		out[n].min = buttons[i].touch_min;
+		out[n].max = buttons[i].touch_max;
+		out[n].touched = base - value > buttons[i].touch_delta;
+		n++;
+
+		buttons[i].touch_min = value;
+		buttons[i].touch_max = value;
+	}
+#endif
+
+	return n;
+}
+
+/****************************************************************************************
+ * Report what the touch pads read, on the console
  */
 void button_touch_report(void) {
 #if CONFIG_IDF_TARGET_ESP32
@@ -470,9 +598,11 @@ void button_touch_report(void) {
 			continue;
 		}
 
-		ESP_LOGI(TAG, "touch pad GPIO %u reads %u, threshold %d -> %s", buttons[i].gpio,
-				 value, buttons[i].touch_threshold,
-				 value < buttons[i].touch_threshold ? "touched" : "idle");
+		int32_t base = buttons[i].touch_base >> TOUCH_BASE_SHIFT;
+
+		ESP_LOGI(TAG, "touch pad GPIO %u reads %u, idles around %d, %d below it and %d is a touch -> %s",
+				 buttons[i].gpio, value, (int) base, (int) (base - value), buttons[i].touch_delta,
+				 base - value > buttons[i].touch_delta ? "touched" : "idle");
 	}
 
 	if (!any) ESP_LOGI(TAG, "no touch pads configured");

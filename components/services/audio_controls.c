@@ -50,7 +50,10 @@ static const actrls_config_map_t actrls_config_map[] =
 			{"long_press", offsetof(actrls_config_t,long_press),actrls_process_int},
 			{"shifter_gpio", offsetof(actrls_config_t,shifter_gpio), actrls_process_int},
 			{"touch", offsetof(actrls_config_t,touch), actrls_process_bool},
-			{"threshold", offsetof(actrls_config_t,threshold), actrls_process_int},
+			{"delta", offsetof(actrls_config_t,touch_delta), actrls_process_int},
+			// still accepted so an old configuration is rejected with a reason rather
+			// than an "unknown member", see button_create_touch
+			{"threshold", offsetof(actrls_config_t,touch_delta), actrls_process_int},
 			{"normal", offsetof(actrls_config_t,normal), actrls_process_action},
 			{"shifted", offsetof(actrls_config_t,shifted), actrls_process_action},
 			{"longpress", offsetof(actrls_config_t,longpress), actrls_process_action},
@@ -542,7 +545,7 @@ static void actrls_defaults(actrls_config_t *config) {
 	config->long_press = 0;
 	config->shifter_gpio = -1;
 	config->touch = false;
-	config->threshold = 0;
+	config->touch_delta = 0;
 	config->normal[0].action = config->normal[1].action = ACTRLS_NONE;
 	config->longpress[0].action = config->longpress[1].action = ACTRLS_NONE;
 	config->shifted[0].action = config->shifted[1].action = ACTRLS_NONE;
@@ -592,8 +595,8 @@ static esp_err_t actrls_init_json(const char *profile_name, bool create) {
 				err = (err == ESP_OK) ? loc_err : err;
 				if (loc_err == ESP_OK) {
 					if (create) {
-						// a touch pad has no pull-up and its own threshold, the rest is identical
-						if (cur_config->touch) button_create_touch((void*) cur_config, cur_config->gpio, cur_config->threshold,
+						// a touch pad has no pull-up and its own sensitivity, the rest is identical
+						if (cur_config->touch) button_create_touch((void*) cur_config, cur_config->gpio, cur_config->touch_delta,
 												cur_config->debounce, control_handler,
 												cur_config->long_press, cur_config->shifter_gpio);
 						else button_create((void*) cur_config, cur_config->gpio,cur_config->type, 

@@ -38,7 +38,7 @@ typedef struct actrl_config_s {
 	int long_press;
 	int shifter_gpio;
 	bool touch;
-	int threshold;
+	int touch_delta;	// json "delta", or the obsolete "threshold" that buttons.c rejects
 	actrls_action_detail_t normal[2], longpress[2], shifted[2], longshifted[2];	// [0] keypressed, [1] keyreleased
 } actrls_config_t;
 

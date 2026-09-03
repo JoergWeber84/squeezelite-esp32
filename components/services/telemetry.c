@@ -42,6 +42,9 @@ static void publish_state(void);
 // how often the switch is looked at, which is what makes "immediately" mean anything
 #define TICK_MS					250
 
+#define TOUCH_TOPIC				"touch"
+#define TOUCH_PADS_MAX			8
+
 // one announcement is the largest thing we build, the state object stays well below it
 #define PAYLOAD_LEN				640
 #define TOPIC_LEN				160
@@ -56,6 +59,8 @@ static EXT_RAM_ATTR struct {
 	int channel;			// last published audio channel, -1 when not applicable
 	char last_tag[32];		// last published tags, for spotting a change
 	char prev_tag[32];
+	int touch_ms;			// touch debug interval, 0 when off
+	int touch_elapsed;
 } telemetry;
 
 /*
@@ -300,6 +305,39 @@ static void publish_state(void) {
 }
 
 /****************************************************************************************
+ * Raw touch readings, for calibrating a pad without a console - reading a pad while
+ * touching it is awkward with one pair of hands, and watching a topic is not.
+ *
+ * "dip" is the deepest excursion below the idle level since the last message, which is
+ * the number a delta wants sizing against: a finger should produce several times what
+ * the idle band wanders by.
+ */
+static void publish_touch(void) {
+	struct button_touch_s pads[TOUCH_PADS_MAX];
+	char payload[512];
+	int n = button_touch_probe(pads, TOUCH_PADS_MAX);
+	size_t used = 0;
+
+	if (!n) return;
+
+	used += snprintf(payload + used, sizeof(payload) - used, "{\"pads\":[");
+
+	for (int i = 0; i < n && used < sizeof(payload); i++) {
+		used += snprintf(payload + used, sizeof(payload) - used,
+						 "%s{\"gpio\":%d,\"value\":%d,\"base\":%d,\"min\":%d,\"max\":%d,"
+						 "\"dip\":%d,\"delta\":%d,\"touched\":%s}",
+						 i ? "," : "", pads[i].gpio, pads[i].value, pads[i].baseline,
+						 pads[i].min, pads[i].max, pads[i].baseline - pads[i].min,
+						 pads[i].delta, pads[i].touched ? "true" : "false");
+	}
+
+	if (used < sizeof(payload)) snprintf(payload + used, sizeof(payload) - used, "]}");
+
+	// a measurement series and not a state, so keeping the last one would say nothing
+	mqtt_svc_publish(TOUCH_TOPIC, payload, 0, false);
+}
+
+/****************************************************************************************
  *
  */
 static void telemetry_task(void *arg) {
@@ -352,6 +390,15 @@ static void telemetry_task(void *arg) {
 
 		// a change goes out at once, without disturbing the periodic cadence
 		if ((due || changed) && mqtt_svc_connected()) publish_state();
+
+		if (telemetry.touch_ms) {
+			telemetry.touch_elapsed += TICK_MS;
+
+			if (telemetry.touch_elapsed >= telemetry.touch_ms) {
+				telemetry.touch_elapsed = 0;
+				if (mqtt_svc_connected()) publish_touch();
+			}
+		}
 	}
 }
 
@@ -401,6 +448,21 @@ void telemetry_svc_init(void) {
 
 	// seeded so the first tick does not report a change that nobody made
 	telemetry.channel = bt_headphone_channel();
+
+	/*
+	Touch debugging, off unless asked for: an interval in milliseconds, rounded up to the
+	tick above because that is how often the pads are looked at here. Leave it off in
+	normal use - it is a stream of measurements, and nothing consumes it.
+	*/
+	char *touch = config_alloc_get_default(NVS_TYPE_STR, "touch_debug", "", 0);
+	if (touch) {
+		if (*touch) telemetry.touch_ms = atoi(touch);
+		free(touch);
+	}
+	if (telemetry.touch_ms > 0 && telemetry.touch_ms < TICK_MS) telemetry.touch_ms = TICK_MS;
+	if (telemetry.touch_ms) {
+		ESP_LOGI(TAG, "publishing raw touch readings on %s every %d ms", TOUCH_TOPIC, telemetry.touch_ms);
+	}
 
 	char *name = config_alloc_get_str("host_name", NULL, "squeezelite");
 	strncpy(telemetry.device_id, name ? name : "squeezelite", sizeof(telemetry.device_id) - 1);
