@@ -77,6 +77,13 @@ cJSON * control_profiles = NULL;
 static EXT_RAM_ATTR actrls_t default_controls, current_controls;
 static actrls_hook_t *default_hook, *current_hook;
 static bool default_raw_controls, current_raw_controls;
+
+/*
+The gpio of the switch that starts and stops play, taken from whichever ordinary
+button the profile gives the play action to. -1 when the profile has no such switch,
+and then nothing is gated.
+*/
+static int play_switch_gpio = -1;
 static actrls_ir_handler_t *default_ir_handler, *current_ir_handler;
 
 static EXT_RAM_ATTR struct {
@@ -194,6 +201,17 @@ esp_err_t actrls_init(const char *profile_name) {
 static void control_handler(void *client, button_event_e event, button_press_e press, bool long_press) {
 	actrls_config_t *key = (actrls_config_t*) client;
 	actrls_action_detail_t  action_detail;
+
+	/*
+	The touch buttons say nothing while the play switch is off. They sit on the same face
+	as the switch and are easy to brush against when the box is meant to be quiet, and a
+	volume or track command going out then is never what was meant. The switch itself is
+	not gated, of course - it is what turns the others back on.
+	*/
+	if (key->touch && play_switch_gpio != -1 && !button_is_pressed(play_switch_gpio, NULL)) {
+		ESP_LOGD(TAG, "play switch is off, ignoring touch gpio:%u", key->gpio);
+		return;
+	}
 
 	switch(press) {
 	case BUTTON_NORMAL:
@@ -594,6 +612,12 @@ static esp_err_t actrls_init_json(const char *profile_name, bool create) {
 				esp_err_t loc_err = actrls_process_button(button, cur_config);
 				err = (err == ESP_OK) ? loc_err : err;
 				if (loc_err == ESP_OK) {
+					// the switch that gates the touch buttons is the one that starts play
+					if (!cur_config->touch && cur_config->normal[0].action == ACTRLS_PLAY) {
+						play_switch_gpio = cur_config->gpio;
+						ESP_LOGI(TAG, "touch buttons only act while the play switch on gpio %u is on", cur_config->gpio);
+					}
+
 					if (create) {
 						// a touch pad has no pull-up and its own sensitivity, the rest is identical
 						if (cur_config->touch) button_create_touch((void*) cur_config, cur_config->gpio, cur_config->touch_delta,
