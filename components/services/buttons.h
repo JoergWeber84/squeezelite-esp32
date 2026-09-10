@@ -38,6 +38,11 @@ reading wanders with temperature, humidity and anything that changes the stray
 capacitance, so it is followed and a touch is a dip below it. Nothing needs calibrating
 for that to keep working.
 
+A dip is not taken at face value. It has to last 200ms before it counts, which no noise
+seen here does, and only the pad that dips furthest may be pressed - the others are
+ignored for as long as they stay down, so crosstalk into a neighbouring pad cannot press
+two buttons at once.
+
 "delta" is how far below the idle level counts as a finger, in raw counts, 0 for the
 default. It only wants changing when a pad is unusually insensitive - use
 button_touch_report or the touch debug topic to see what a real finger produces. Values
@@ -67,7 +72,9 @@ struct button_touch_s {
 	int baseline;		// what it has been idling at
 	int delta;			// how far below the baseline counts as touched
 	int min, max;		// of value, since the previous probe
-	bool touched;
+	bool touched;		// the state reported, after the persistence and the single winner
+	int presses;		// accepted since boot: a dip that did not raise this was rejected,
+					// which is otherwise indistinguishable from one this probe just missed
 };
 
 int button_touch_probe(struct button_touch_s *out, int max);

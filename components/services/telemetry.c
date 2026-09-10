@@ -325,10 +325,10 @@ static void publish_touch(void) {
 	for (int i = 0; i < n && used < sizeof(payload); i++) {
 		used += snprintf(payload + used, sizeof(payload) - used,
 						 "%s{\"gpio\":%d,\"value\":%d,\"base\":%d,\"min\":%d,\"max\":%d,"
-						 "\"dip\":%d,\"delta\":%d,\"touched\":%s}",
+						 "\"dip\":%d,\"delta\":%d,\"touched\":%s,\"presses\":%d}",
 						 i ? "," : "", pads[i].gpio, pads[i].value, pads[i].baseline,
 						 pads[i].min, pads[i].max, pads[i].baseline - pads[i].min,
-						 pads[i].delta, pads[i].touched ? "true" : "false");
+						 pads[i].delta, pads[i].touched ? "true" : "false", pads[i].presses);
 	}
 
 	if (used < sizeof(payload)) snprintf(payload + used, sizeof(payload) - used, "]}");

@@ -53,6 +53,9 @@ static EXT_RAM_ATTR struct button_s {
 	int32_t touch_base;			// idle level, scaled by 1 << TOUCH_BASE_SHIFT
 	int touch_min, touch_max;	// of the raw value, since the last probe
 	int touch_adrift;			// polls the value has been beyond the delta
+	int touch_agree;			// polls the pad has disagreed with the level it is reported at
+	int touch_presses;			// presses accepted since boot, for telling a rejection from a missed one
+	int touch_calm;				// polls the pad has agreed with its baseline, until it counts as trustworthy
 	TimerHandle_t timer;
 } buttons[MAX_BUTTONS];
 
@@ -77,12 +80,22 @@ level instead removes the need to ever calibrate it.
 
 The baseline is kept scaled so the update does not starve on truncation, and follows at
 one part in 4096 of a sample. At a 50 ms poll that is a time constant of about three and
-a half minutes, which is what makes this safe without having to stop following while a
-pad is pressed: 200 ms of finger moves the baseline by a thousandth of the dip.
+a half minutes. A pad sitting further than its delta from the baseline stops following
+it, so that neither a finger nor the crosstalk from a neighbour drags the level the pad
+is judged against.
 
-The one assumption is that these are tap buttons. A pad held down does get absorbed
-eventually and then reads as released - with the numbers below, after some four minutes.
-Nothing here should be built into a hold-to-repeat.
+The dip on its own does not make a press, and two things are asked on top of it:
+
+- a pad has to keep saying the same thing for several polls before it is believed. One
+  reading is not a press, and a tap lasts far longer than the noise that would otherwise
+  produce one.
+- only one pad can be under a finger, so only the one that dips furthest may be pressed
+  and every other is ignored for as long as it stays down. What makes this decidable is
+  that crosstalk into a neighbour is always weaker than the pad actually being touched.
+
+The one assumption is that these are tap buttons. A pad held down is eventually declared
+stuck, its baseline restarted, and it then reads as released. Nothing here should be
+built into a hold-to-repeat.
 */
 #define TOUCH_POLL			50
 #define TOUCH_FILTER		10
@@ -90,8 +103,33 @@ Nothing here should be built into a hold-to-repeat.
 #define TOUCH_RATE_SHIFT	12
 
 // counts below the baseline that count as a finger. Measured noise is under ten and a
-// real touch was sixty-five and up, so there is room between them to be generous
+// real touch is forty and up, so there is room between them to be generous
 #define TOUCH_DELTA			20
+
+/*
+How many polls a pad must agree with itself before its state is reported, pressing and
+letting go. Pressing is the slow one: 200 ms is still well inside a tap, and nothing seen
+here that was not a finger lasted anything like that long. Letting go is quicker, so a
+button does not feel as if it sticks.
+*/
+#define TOUCH_HOLD			4
+#define TOUCH_LETGO			2
+
+// letting go takes a smaller dip than pressing, in percent of the delta, so a pad
+// sitting right on the threshold cannot chatter across it
+#define TOUCH_LETGO_PC		60
+
+/*
+Polls a pad must sit quietly on its baseline before it is allowed to report a press at
+all. The seed is taken while the reading is still unsettled, and the drop to the pad's
+true level that follows is indistinguishable from a finger - one pad here starts fifty
+counts high every time and produced a track skip on every boot. Being near the baseline
+once is not enough, because during that drop the pad is near it too; it has to stay.
+
+A press does not clear this, so taps in quick succession are unaffected. Only restarting
+a baseline does, which is exactly when the pad has just proven it cannot be trusted.
+*/
+#define TOUCH_SETTLE		20
 
 /*
 How long a pad may sit further than that from its baseline before the baseline is
@@ -102,10 +140,13 @@ for the first moments and averaging did not catch it - and a baseline that high 
 pad reads permanently pressed. It does correct itself, but at the rate above that takes
 some four and a half minutes, and it is stuck pressed for all of them.
 
-Ten seconds is far longer than any tap and far shorter than that, and it costs nothing
+Three seconds is far longer than any tap and far shorter than that, and it costs nothing
 in normal use: the value sits within a few counts of the baseline, not beyond the delta.
+It was ten, which is how long a pad here stayed pressed once its baseline had slipped
+under it - and a stuck button is worth ending sooner than that. Nothing on these pads
+holds for three seconds, but a long press built on one would not survive this.
 */
-#define TOUCH_STUCK_MS		10000
+#define TOUCH_STUCK_MS		3000
 
 static const int touch_gpio[TOUCH_PAD_MAX] = { 4, 0, 2, 15, 13, 12, 14, 27, 33, 32 };
 static TimerHandle_t touch_timer;
@@ -197,18 +238,27 @@ static void buttons_polling( TimerHandle_t xTimer ) {
  * Touch pads polling timer
  */
 static void touch_polling( TimerHandle_t xTimer ) {
+	int32_t off[MAX_BUTTONS];
+	bool sampled[MAX_BUTTONS] = { };
+	int winner = -1;
+
+	/*
+	Read every pad before judging any of them: which one is under the finger is decided by
+	holding them against each other, and that cannot be done one at a time.
+	*/
 	for (int i = 0; i < n_buttons; i++) {
 		uint16_t value;
-		int level;
 
 		if (!buttons[i].touch) continue;
 		if (touch_pad_read_filtered(buttons[i].touch_channel, &value) != ESP_OK) continue;
 
 		int32_t base = buttons[i].touch_base >> TOUCH_BASE_SHIFT;
-		int32_t off = base - value;
 
-		// a loaded pad reads below where it has been sitting, and that means 'pressed'
-		level = off > buttons[i].touch_delta ? buttons[i].type : !buttons[i].type;
+		sampled[i] = true;
+		off[i] = base - value;
+
+		if (value < buttons[i].touch_min) buttons[i].touch_min = value;
+		if (value > buttons[i].touch_max) buttons[i].touch_max = value;
 
 		/*
 		Sitting beyond the delta for longer than any tap means the baseline is wrong, not
@@ -216,29 +266,78 @@ static void touch_polling( TimerHandle_t xTimer ) {
 		where it is - either direction, since a baseline too low leaves the pad deaf just
 		as a baseline too high leaves it stuck pressed.
 		*/
-		if (off > buttons[i].touch_delta || -off > buttons[i].touch_delta) {
+		if (off[i] > buttons[i].touch_delta || -off[i] > buttons[i].touch_delta) {
 			if (++buttons[i].touch_adrift * TOUCH_POLL >= TOUCH_STUCK_MS) {
 				ESP_LOGW(TAG, "touch pad GPIO %u sat %d off its baseline of %d for %ds, restarting it at %u",
-						 buttons[i].gpio, (int) off, (int) base, TOUCH_STUCK_MS / 1000, value);
+						 buttons[i].gpio, (int) off[i], (int) base, TOUCH_STUCK_MS / 1000, value);
 				buttons[i].touch_base = (int32_t) value << TOUCH_BASE_SHIFT;
 				buttons[i].touch_adrift = 0;
-				level = !buttons[i].type;
+				buttons[i].touch_calm = 0;
+				off[i] = 0;
 			}
+			// a disturbed pad does not move the level it is judged against
 		} else {
 			buttons[i].touch_adrift = 0;
+			if (buttons[i].touch_calm < TOUCH_SETTLE) buttons[i].touch_calm++;
+			buttons[i].touch_base += (((int32_t) value << TOUCH_BASE_SHIFT) - buttons[i].touch_base) >> TOUCH_RATE_SHIFT;
+		}
+	}
+
+	// a pad that is already down keeps its place until it comes back up, so that crosstalk
+	// into a neighbour cannot take the press over halfway through
+	for (int i = 0; i < n_buttons; i++) {
+		if (sampled[i] && buttons[i].level == buttons[i].type) winner = i;
+	}
+
+	/*
+	Otherwise it is whichever pad dips furthest, and only if it dips far enough at all. A
+	pad that has not yet lain still on its baseline for TOUCH_SETTLE polls is not eligible,
+	which keeps the drop from an unsettled seed to the pad's real level from being read as
+	a finger.
+	*/
+	if (winner == -1) {
+		for (int i = 0; i < n_buttons; i++) {
+			if (!sampled[i] || buttons[i].touch_calm < TOUCH_SETTLE) continue;
+			if (off[i] <= buttons[i].touch_delta) continue;
+			if (winner == -1 || off[i] > off[winner]) winner = i;
+		}
+	}
+
+	for (int i = 0; i < n_buttons; i++) {
+		int level, needed;
+
+		if (!sampled[i]) continue;
+
+		if (buttons[i].level == buttons[i].type) {
+			// letting go asks for less of a dip than pressing did, so the two cannot chatter
+			int letgo = (buttons[i].touch_delta * TOUCH_LETGO_PC) / 100;
+			level = off[i] > letgo ? buttons[i].type : !buttons[i].type;
+			needed = TOUCH_LETGO;
+		} else {
+			level = i == winner ? buttons[i].type : !buttons[i].type;
+			needed = TOUCH_HOLD;
 		}
 
-		// follow the idle level, slowly enough that a tap does not take it along
-		buttons[i].touch_base += (((int32_t) value << TOUCH_BASE_SHIFT) - buttons[i].touch_base) >> TOUCH_RATE_SHIFT;
-
-		if (value < buttons[i].touch_min) buttons[i].touch_min = value;
-		if (value > buttons[i].touch_max) buttons[i].touch_max = value;
-
-		if (level != buttons[i].level) {
-			ESP_LOGD(TAG, "touch pad gpio:%u value:%u base:%d level:%u", buttons[i].gpio,
-					 value, (int) base, level);
-			buttons_handler(buttons + i, level);
+		// and it only counts once the pad has said the same thing that many polls running
+		if (level == buttons[i].level) {
+			buttons[i].touch_agree = 0;
+			continue;
 		}
+
+		if (++buttons[i].touch_agree < needed) continue;
+
+		buttons[i].touch_agree = 0;
+
+		if (level == buttons[i].type) {
+			buttons[i].touch_presses++;
+			ESP_LOGI(TAG, "touch pad GPIO %u pressed, %d below its baseline of %d, %dms after boot",
+					 buttons[i].gpio, (int) off[i], (int) (buttons[i].touch_base >> TOUCH_BASE_SHIFT),
+					 (int) (xTaskGetTickCount() * portTICK_RATE_MS));
+		}
+
+		ESP_LOGD(TAG, "touch pad gpio:%u off:%d base:%d level:%u", buttons[i].gpio, (int) off[i],
+				 (int) (buttons[i].touch_base >> TOUCH_BASE_SHIFT), level);
+		buttons_handler(buttons + i, level);
 	}
 }
 #endif
@@ -569,7 +668,10 @@ int button_touch_probe(struct button_touch_s *out, int max) {
 		out[n].delta = buttons[i].touch_delta;
 		out[n].min = buttons[i].touch_min;
 		out[n].max = buttons[i].touch_max;
-		out[n].touched = base - value > buttons[i].touch_delta;
+		// the state actually reported, not the raw dip: what is worth watching is whether
+		// the pad got through the persistence and the pick of a single winner, or not
+		out[n].touched = buttons[i].level == buttons[i].type;
+		out[n].presses = buttons[i].touch_presses;
 		n++;
 
 		buttons[i].touch_min = value;
